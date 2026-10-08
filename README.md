@@ -51,10 +51,39 @@ Convex deployment: no separate server or auth provider.
 Found a bug? Feature request?
 [File it here](https://github.com/get-convex/mcp/issues).
 
+## Quick start: paste this into your coding agent
+
+Open your Convex app in Claude Code, Codex, Cursor or any coding agent and
+paste:
+
+```text
+Add an MCP server to this Convex app so our users can use it from their AI
+agents (Claude, ChatGPT, Cursor, Claude Code).
+
+1. Run `npm install @convex-dev/mcp@alpha`.
+2. Read node_modules/@convex-dev/mcp/skills/convex-mcp/SKILL.md and its
+   references, and follow it: study the app, then propose the MCP tools
+   (names, descriptions, args, scopes, annotations) as a table and wait for
+   my OK before writing code.
+3. Wire it up as the skill describes: convex.config.ts, convex/mcp.ts with
+   the tools on internal functions that take the verified userId, http.ts,
+   a /connect consent page using our existing sign-in, and a "Connected
+   agents" section in settings with API keys.
+4. Verify against the dev deployment: create an API key, run tools/list,
+   and call every tool once.
+5. Then read node_modules/@convex-dev/mcp/skills/convex-mcp-security/SKILL.md
+   and run that audit with two test users. Fix what it finds and show me the
+   report.
+
+Don't deploy to production or touch real user data.
+```
+
+The agent will stop after step 2 to show you the proposed tools.
+
 ## Installation
 
 ```sh
-npm install @convex-dev/mcp
+npm install @convex-dev/mcp@alpha
 ```
 
 ```ts

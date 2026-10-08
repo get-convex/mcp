@@ -28,25 +28,31 @@ payments.
 
 ## 2. Functions the tools call (Critical if wrong)
 
-- [ ] Every function that accepts a `userId` argument is
+- [ ] Every function a tool calls with `userId` is
       `internalQuery`/`internalMutation`/`internalAction`. A **public**
-      function taking `userId` is callable by anyone from any Convex client.
-      This is the most common real bug.
+      function that *trusts* a `userId` argument is callable by anyone from
+      any Convex client — the most common real bug. (A public function that
+      authenticates and checks `userId` equals the caller is fine, but
+      shouldn't be what tools call.)
 - [ ] Every ID from the model is normalized (`ctx.db.normalizeId`) and
       **ownership-checked against `userId`** before read or write, including
       IDs of child objects (a comment ID in a project the user can't see).
 - [ ] Writes into a container (add item to list/project/channel) check the
       user may write to *that container*.
 - [ ] Search/list functions filter by the user (index on owner) before
-      `take()`, not after (filtering after a `take` can also return other
-      users' rows if the filter is wrong).
+      `take()`. Other filters applied *after* `take()` silently return
+      incomplete results (report under Other unless it leaks data).
 - [ ] No tool calls admin/internal maintenance functions (`internal.admin.*`,
       migrations, billing overrides) unless explicitly intended and scoped.
 
 ## 3. What results expose (High/Medium)
 
 - [ ] Every tool returning an object has `returns`. The component enforces
-      it, so it is also the allowlist of fields that reach the agent.
+      it (plain return values and `structuredContent`), so it is also the
+      allowlist of fields that reach the agent.
+- [ ] Tools using `callToolResult(...)`: review `content` blocks by hand —
+      they are not validated (secrets, unexpected fields, `resource_link`
+      URIs, oversized images).
 - [ ] No secrets in results or error messages: tokens, password hashes,
       API keys, internal notes, other users' emails/PII.
 - [ ] `ConvexError` messages don't echo other users' data ("Doc X belongs
@@ -60,25 +66,41 @@ payments.
       connected user (comments, messages, shared docs, emails, form
       submissions, file contents, web pages).
 - [ ] List tools that send data out (see Inventory).
-- [ ] If a server has both: the outbound tools have
-      `destructiveHint: true`, a separate write scope users can withhold,
-      explicit recipient arguments (no "send to whoever the doc says"), and
-      ideally a recipient allowlist (existing contacts/teammates) enforced
-      server-side.
-- [ ] Third-party text in results is clearly fielded (e.g.
-      `{ author, body }`), not concatenated into instructions-looking prose.
+- [ ] If a server has both, there is a **server-enforced policy that
+      doesn't depend on the model**: destination allowlists (existing
+      contacts/teammates/domains), operation and value caps, and for
+      consequential sends a fresh human confirmation in your app showing the
+      exact recipient and payload. Annotations, scopes and fielded results
+      (`{ author, body }`) help clients but are **not** mitigations by
+      themselves; note residual risk even when authorization is correct.
+- [ ] Consider splitting outbound tools into their own scope (or server)
+      so users can connect a read-only agent.
 - [ ] `instructions` and tool descriptions don't tell the model to follow
       directions found in content.
 - [ ] No tool fetches arbitrary model-supplied URLs from the backend
       (SSRF); if needed, allowlist hosts.
+
+## 4b. Downstream credentials (High)
+
+- [ ] Inventory every third-party API the tools call and the credential
+      used. Fail if a tool accepts an access token as an argument, returns
+      one, forwards the MCP bearer token downstream (token passthrough), or
+      uses a per-user downstream token not bound to `userId`.
+- [ ] If the app brokers OAuth to a downstream service with one shared
+      client ID, a new MCP client must not inherit consent another client
+      obtained: require the user's consent per MCP connection.
 
 ## 5. Scopes and annotations (High/Low)
 
 - [ ] Every write tool has a write scope; read tools a read scope, so a
       read-only connection is possible.
 - [ ] `readOnlyHint` only on tools that truly don't write.
-      `destructiveHint` on deletes, sends, payments, sharing changes, bulk
-      operations. Clients decide when to ask the user based on these.
+      `destructiveHint: true` on deletes, sends, payments, sharing changes,
+      bulk operations. Note the MCP defaults when omitted:
+      `destructiveHint: true`, `openWorldHint: true` — missing annotations
+      make tools look *more* dangerous (a UX issue, Low), so set
+      `destructiveHint: false` / `openWorldHint: false` where accurate.
+      Clients treat annotations as untrusted hints; they are not enforcement.
 - [ ] Scope descriptions (shown on the consent page) are accurate and
       understandable.
 
@@ -88,11 +110,16 @@ payments.
       (no open redirect via a `next=` parameter).
 - [ ] Approval happens only on an explicit user click (a `POST`/action),
       never automatically on page load and never via a `GET` link.
-- [ ] Shows the client name **and** the redirect host, and the scopes.
-      Treat client names as untrusted text (they're self-registered): render
-      as text, never HTML.
+- [ ] Shows the scopes, the redirect host prominently (full redirect URI
+      available), and the client name **labeled as unverified** — names are
+      self-registered and can impersonate known agents. Render as text,
+      never HTML; don't load remote `logo_uri` images unless the client is
+      trusted. Warn when the redirect is `localhost`/loopback (any local
+      program can claim it).
 - [ ] Served with `Content-Security-Policy: frame-ancestors 'none'` (or
-      `X-Frame-Options: DENY`) so it can't be clickjacked in an iframe.
+      `X-Frame-Options: DENY`). Check the **production hosting config**
+      (`vercel.json`, `_headers`, Netlify/Cloudflare rules, Convex static
+      hosting); a dev-server check only proves dev.
 - [ ] The page navigates to the `redirectUrl` returned by `authorize`, not
       a URL built from query parameters.
 
@@ -113,5 +140,6 @@ payments.
 ## 8. Abuse and cost (Medium)
 
 - [ ] Expensive tools (LLM calls, exports, emails) are rate limited per
-      user (`@convex-dev/rate-limiter` keyed by `userId`).
-- [ ] Bulk operations have caps.
+      user (`@convex-dev/rate-limiter` keyed by `userId`). N/A if there are
+      none.
+- [ ] Bulk operations have caps; free-text inputs have length limits.
