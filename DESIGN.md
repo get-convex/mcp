@@ -77,6 +77,13 @@ export const { getAuthRequest, authorize, listConnections, revokeConnection,
 
 ## Protocol
 
+- **Dual-era.** Requests carrying `_meta["io.modelcontextprotocol/protocolVersion"]`
+  use MCP 2026-07-28: no `initialize`, `server/discover`, required
+  `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` headers that must match
+  the body (`-32020`), `-32022` with the supported versions, `resultType` +
+  `serverInfo` `_meta` on every result, `ttlMs`/`cacheScope` on lists
+  (`private` for `tools/list`, which depends on the token's scopes), 404 for
+  unknown methods. Other requests get the legacy behavior below.
 - Streamable HTTP, **stateless**: no `Mcp-Session-Id`. Requests are answered
   with `application/json`; POSTs carrying only notifications/responses get
   `202` with no body. GET/DELETE `/mcp` → 405 (no server-initiated SSE).

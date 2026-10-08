@@ -155,3 +155,155 @@ describe("McpServer", () => {
     ).toThrow(/scope "admin"/);
   });
 });
+
+describe("MCP 2026-07-28 (stateless)", () => {
+  const META = "io.modelcontextprotocol/";
+  const meta = {
+    [`${META}protocolVersion`]: "2026-07-28",
+    [`${META}clientCapabilities`]: {},
+    [`${META}clientInfo`]: { name: "test", version: "1" },
+  };
+  async function modern(
+    s: McpServer,
+    method: string,
+    params: Record<string, unknown> = {},
+    headers: Record<string, string> = {},
+  ) {
+    const res = await s.handleMcp(
+      ctx(),
+      new Request("https://site.example/mcp", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer key",
+          "Content-Type": "application/json",
+          "MCP-Protocol-Version": "2026-07-28",
+          "Mcp-Method": method,
+          ...(typeof params.name === "string" ? { "Mcp-Name": params.name } : {}),
+          ...headers,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { ...params, _meta: meta } }),
+      }),
+    );
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : null };
+  }
+  const s = () =>
+    server({
+      echo: tool({
+        description: "Echo",
+        args: { text: v.string() },
+        returns: v.object({ text: v.string() }),
+        handler: async (_ctx, args) => ({ text: args.text }),
+      }),
+    });
+
+  test("server/discover advertises versions, capabilities and identity", async () => {
+    const r = await modern(s(), "server/discover");
+    expect(r.status).toBe(200);
+    expect(r.body.result).toMatchObject({
+      resultType: "complete",
+      supportedVersions: expect.arrayContaining(["2026-07-28", "2025-11-25"]),
+      capabilities: { tools: {} },
+      cacheScope: "public",
+      _meta: { [`${META}serverInfo`]: { name: "test", version: "1" } },
+    });
+  });
+
+  test("tools/list and tools/call carry resultType and cache hints", async () => {
+    const list = await modern(s(), "tools/list");
+    expect(list.body.result).toMatchObject({ resultType: "complete", cacheScope: "private" });
+    expect(list.body.result.ttlMs).toBeGreaterThan(0);
+    const call = await modern(s(), "tools/call", { name: "echo", arguments: { text: "hi" } });
+    expect(call.body.result).toMatchObject({
+      resultType: "complete",
+      structuredContent: { text: "hi" },
+    });
+  });
+
+  test("headers must match the body (-32020)", async () => {
+    const wrongName = await modern(
+      s(),
+      "tools/call",
+      { name: "echo", arguments: { text: "x" } },
+      { "Mcp-Name": "other" },
+    );
+    expect(wrongName.status).toBe(400);
+    expect(wrongName.body.error.code).toBe(-32020);
+    const wrongMethod = await modern(s(), "tools/list", {}, { "Mcp-Method": "tools/call" });
+    expect(wrongMethod.body.error.code).toBe(-32020);
+    // Base64 sentinel values are decoded before comparing.
+    const encoded = await modern(
+      s(),
+      "tools/call",
+      { name: "echo", arguments: { text: "x" } },
+      { "Mcp-Name": `=?base64?${btoa("echo")}?=` },
+    );
+    expect(encoded.status).toBe(200);
+  });
+
+  test("unsupported versions list what is supported (-32022)", async () => {
+    const res = await s().handleMcp(
+      ctx(),
+      new Request("https://site.example/mcp", {
+        method: "POST",
+        headers: { Authorization: "Bearer key", "MCP-Protocol-Version": "2099-01-01", "Mcp-Method": "tools/list" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/list",
+          params: { _meta: { ...meta, [`${META}protocolVersion`]: "2099-01-01" } },
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe(-32022);
+    expect(body.error.data).toMatchObject({ requested: "2099-01-01", supported: expect.arrayContaining(["2026-07-28"]) });
+  });
+
+  test("missing required _meta is -32602 / 400; unknown methods 404", async () => {
+    const res = await s().handleMcp(
+      ctx(),
+      new Request("https://site.example/mcp", {
+        method: "POST",
+        headers: { Authorization: "Bearer key", "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe(-32602);
+    const ping = await modern(s(), "ping");
+    expect(ping.status).toBe(404);
+    expect(ping.body.error.code).toBe(-32601);
+  });
+
+  test("legacy clients still initialize", async () => {
+    const r = await call(s(), ctx(), rpc("initialize", { protocolVersion: "2025-11-25" }), "2025-11-25");
+    expect(r.body.result.protocolVersion).toBe("2025-11-25");
+    // A legacy client asking for an unknown version gets the latest legacy one.
+    const r2 = await call(s(), ctx(), rpc("initialize", { protocolVersion: "2026-07-28" }), "2025-06-18");
+    expect(r2.body.result.protocolVersion).toBe("2025-11-25");
+  });
+});
+
+describe("callToolResult", () => {
+  test("structuredContent is still checked against returns", async () => {
+    const { callToolResult } = await import("./index.js");
+    const s = server({
+      leak: tool({
+        description: "leak",
+        returns: v.object({ name: v.string() }),
+        handler: async () =>
+          callToolResult({
+            content: [{ type: "text", text: "ok" }],
+            structuredContent: { name: "x", secret: "s" },
+          }) as any,
+      }),
+    });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = await call(s, ctx(), rpc("tools/call", { name: "leak", arguments: {} }));
+    spy.mockRestore();
+    expect(r.body.result.isError).toBe(true);
+    expect(JSON.stringify(r.body)).not.toContain("secret");
+  });
+});

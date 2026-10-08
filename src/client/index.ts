@@ -158,8 +158,24 @@ export type McpServerOptions = {
   refreshTokenTtlMs?: number;
 };
 
-export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
-const LATEST_PROTOCOL_VERSION = PROTOCOL_VERSIONS[0];
+/**
+ * "Modern" versions are stateless: every request carries its version and
+ * capabilities in `_meta`, with no `initialize` handshake.
+ */
+export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"];
+/** "Legacy" versions start with an `initialize` handshake. */
+export const LEGACY_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
+export const PROTOCOL_VERSIONS = [
+  ...MODERN_PROTOCOL_VERSIONS,
+  ...LEGACY_PROTOCOL_VERSIONS,
+];
+const LATEST_LEGACY_VERSION = LEGACY_PROTOCOL_VERSIONS[0];
+
+const META = "io.modelcontextprotocol/";
+// JSON-RPC error codes defined by MCP 2026-07-28.
+const HEADER_MISMATCH = -32020;
+const UNSUPPORTED_PROTOCOL_VERSION = -32022;
+const TOOLS_LIST_TTL_MS = 5 * 60_000;
 
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 60_000;
@@ -396,17 +412,6 @@ export class McpServer {
       );
     }
 
-    // Absent header means 2025-03-26 (Streamable HTTP §Protocol Version Header).
-    const headerVersion = request.headers.get("MCP-Protocol-Version");
-    if (headerVersion && !PROTOCOL_VERSIONS.includes(headerVersion)) {
-      return respond(
-        json(
-          rpcError(null, -32600, `Unsupported MCP-Protocol-Version: ${headerVersion}`),
-          400,
-        ),
-      );
-    }
-
     let body: unknown;
     try {
       body = await request.json();
@@ -414,31 +419,147 @@ export class McpServer {
       return respond(json(rpcError(null, -32700, "Parse error"), 400));
     }
 
+    // Requests carrying `_meta` protocol fields (or a modern version header)
+    // use the stateless 2026-07-28 protocol; everything else is served with
+    // legacy (initialize-based) semantics.
+    const headerVersion = request.headers.get("MCP-Protocol-Version");
+    const metaVersion = isObject(body)
+      ? metaOf(body)?.[`${META}protocolVersion`]
+      : undefined;
+    if (
+      metaVersion !== undefined ||
+      (headerVersion && MODERN_PROTOCOL_VERSIONS.includes(headerVersion))
+    ) {
+      return respond(await this.handleModern(ctx, request, body, user));
+    }
+    // Absent header means 2025-03-26 (Streamable HTTP §Protocol Version Header).
+    if (headerVersion && !PROTOCOL_VERSIONS.includes(headerVersion)) {
+      return respond(unsupportedVersion(null, headerVersion));
+    }
+    return respond(await this.handleLegacy(ctx, body, headerVersion, user));
+  }
+
+  /** MCP 2026-07-28: one stateless request per POST. */
+  private async handleModern(
+    ctx: ToolCtx,
+    request: Request,
+    body: unknown,
+    user: McpUser,
+  ): Promise<Response> {
+    if (!isObject(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
+      return json(rpcError(null, -32600, "Invalid Request"), 400);
+    }
+    const method = body.method;
+    const id = body.id as string | number | null | undefined;
+    if (id === undefined) {
+      // No client notifications are defined over HTTP; accept and ignore.
+      return new Response(null, { status: 202 });
+    }
+    if (typeof id !== "string" && typeof id !== "number") {
+      return json(rpcError(null, -32600, "Invalid Request"), 400);
+    }
+    const params = isObject(body.params) ? body.params : {};
+    const meta = metaOf(body) ?? {};
+    const version = meta[`${META}protocolVersion`];
+    if (typeof version !== "string" || !isObject(meta[`${META}clientCapabilities`])) {
+      return json(
+        rpcError(id, -32602, `Missing _meta["${META}protocolVersion"] or _meta["${META}clientCapabilities"]`),
+        400,
+      );
+    }
+    if (!MODERN_PROTOCOL_VERSIONS.includes(version)) {
+      return unsupportedVersion(id, version);
+    }
+
+    // Headers mirror the body so intermediaries can route on them; they must
+    // agree (Streamable HTTP §Server Validation).
+    const mismatch = (message: string) =>
+      json(rpcError(id, HEADER_MISMATCH, `Header mismatch: ${message}`), 400);
+    const headerVersion = request.headers.get("MCP-Protocol-Version");
+    if (headerVersion !== version) {
+      return mismatch(`MCP-Protocol-Version is ${headerVersion ?? "missing"}, body says ${version}`);
+    }
+    const headerMethod = request.headers.get("Mcp-Method");
+    if (headerMethod !== method) {
+      return mismatch(`Mcp-Method is ${headerMethod ?? "missing"}, body says ${method}`);
+    }
+    if (["tools/call", "resources/read", "prompts/get"].includes(method)) {
+      const bodyName = method === "resources/read" ? params.uri : params.name;
+      const headerName = decodeHeaderValue(request.headers.get("Mcp-Name"));
+      if (headerName === null || headerName !== bodyName) {
+        return mismatch("Mcp-Name does not match the request body");
+      }
+    }
+
+    const result = (value: Record<string, unknown>) =>
+      json(
+        rpcResult(id, {
+          resultType: "complete",
+          ...value,
+          _meta: { [`${META}serverInfo`]: this.serverInfo },
+        }),
+        200,
+      );
+    switch (method) {
+      case "server/discover":
+        return result({
+          supportedVersions: PROTOCOL_VERSIONS,
+          capabilities: this.capabilities,
+          ...(this.options.instructions
+            ? { instructions: this.options.instructions }
+            : {}),
+          ttlMs: TOOLS_LIST_TTL_MS,
+          cacheScope: "public",
+        });
+      case "tools/list":
+        return result({
+          tools: this.listTools(user),
+          ttlMs: TOOLS_LIST_TTL_MS,
+          // The list depends on the caller's scopes.
+          cacheScope: "private",
+        });
+      case "tools/call": {
+        const t = this.toolFor(params.name);
+        if (!t) {
+          return json(rpcError(id, -32602, `Unknown tool: ${String(params.name)}`), 200);
+        }
+        if (!this.allowed(t, user)) return this.insufficientScope(t.definition.scope!);
+        return result(await this.callTool(ctx, t, params.arguments ?? {}, user));
+      }
+      default:
+        return json(rpcError(id, -32601, `Method not found: ${method}`), 404);
+    }
+  }
+
+  /** MCP 2025-03-26 through 2025-11-25 (initialize-based, stateless here). */
+  private async handleLegacy(
+    ctx: ToolCtx,
+    body: unknown,
+    headerVersion: string | null,
+    user: McpUser,
+  ): Promise<Response> {
     const batch = Array.isArray(body);
     if (batch && headerVersion && headerVersion !== "2025-03-26") {
-      return respond(
-        json(rpcError(null, -32600, "JSON-RPC batching is not supported"), 400),
-      );
+      return json(rpcError(null, -32600, "JSON-RPC batching is not supported"), 400);
     }
     const messages = batch ? (body as unknown[]) : [body];
     if (messages.length === 0) {
-      return respond(json(rpcError(null, -32600, "Invalid Request"), 400));
+      return json(rpcError(null, -32600, "Invalid Request"), 400);
     }
-
     const responses: unknown[] = [];
     for (const message of messages) {
-      const result = await this.handleMessage(ctx, message, user);
-      if (result instanceof Response) return respond(result);
+      const result = await this.handleLegacyMessage(ctx, message, user);
+      if (result instanceof Response) return result;
       if (result !== undefined) responses.push(result);
     }
     if (responses.length === 0) {
       // Only notifications or responses: 202 with no body.
-      return respond(new Response(null, { status: 202 }));
+      return new Response(null, { status: 202 });
     }
-    return respond(json(batch ? responses : responses[0], 200));
+    return json(batch ? responses : responses[0], 200);
   }
 
-  private async handleMessage(
+  private async handleLegacyMessage(
     ctx: ToolCtx,
     message: unknown,
     user: McpUser,
@@ -466,17 +587,13 @@ export class McpServer {
       case "initialize": {
         const requested = p.protocolVersion;
         const protocolVersion =
-          typeof requested === "string" && PROTOCOL_VERSIONS.includes(requested)
+          typeof requested === "string" && LEGACY_PROTOCOL_VERSIONS.includes(requested)
             ? requested
-            : LATEST_PROTOCOL_VERSION;
+            : LATEST_LEGACY_VERSION;
         return rpcResult(id, {
           protocolVersion,
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: {
-            name: this.options.name,
-            version: this.options.version,
-            ...(this.options.title ? { title: this.options.title } : {}),
-          },
+          capabilities: this.capabilities,
+          serverInfo: this.serverInfo,
           ...(this.options.instructions
             ? { instructions: this.options.instructions }
             : {}),
@@ -485,15 +602,10 @@ export class McpServer {
       case "ping":
         return rpcResult(id, {});
       case "tools/list":
-        return rpcResult(id, {
-          tools: [...this.tools.values()]
-            .filter((t) => this.allowed(t, user))
-            .map((t) => t.listing),
-        });
+        return rpcResult(id, { tools: this.listTools(user) });
       case "tools/call": {
-        const name = p.name;
-        const t = typeof name === "string" ? this.tools.get(name) : undefined;
-        if (!t) return rpcError(id, -32602, `Unknown tool: ${String(name)}`);
+        const t = this.toolFor(p.name);
+        if (!t) return rpcError(id, -32602, `Unknown tool: ${String(p.name)}`);
         if (!this.allowed(t, user)) {
           return this.insufficientScope(t.definition.scope!);
         }
@@ -502,6 +614,29 @@ export class McpServer {
       default:
         return rpcError(id, -32601, `Method not found: ${method}`);
     }
+  }
+
+  private get serverInfo() {
+    return {
+      name: this.options.name,
+      version: this.options.version,
+      ...(this.options.title ? { title: this.options.title } : {}),
+    };
+  }
+
+  private get capabilities() {
+    return { tools: { listChanged: false } };
+  }
+
+  /** Tools visible to this connection, in definition order (deterministic). */
+  private listTools(user: McpUser) {
+    return [...this.tools.values()]
+      .filter((t) => this.allowed(t, user))
+      .map((t) => t.listing);
+  }
+
+  private toolFor(name: unknown) {
+    return typeof name === "string" ? this.tools.get(name) : undefined;
   }
 
   private allowed(t: CompiledTool, user: McpUser) {
@@ -540,6 +675,15 @@ export class McpServer {
     }
     if (isObject(value) && (value as any)[RESULT]) {
       const { content, structuredContent, isError } = value as CallToolResult;
+      // structuredContent must still match `returns`. Content blocks are the
+      // developer's responsibility.
+      if (t.returns && !isError) {
+        const checked = checkValue(t.returns, structuredContent, "result");
+        if (!checked.ok) {
+          console.error(`MCP tool "${t.name}" returned invalid structuredContent: ${checked.error}`);
+          return errorResult(`Tool "${t.name}" failed. Please try again later.`);
+        }
+      }
       return {
         content,
         ...(structuredContent ? { structuredContent } : {}),
@@ -921,6 +1065,41 @@ function toCallToolResult(value: unknown, structured: boolean): CallToolResult {
     result.structuredContent = jsonValue;
   }
   return result;
+}
+
+function metaOf(message: Record<string, unknown>) {
+  const params = message.params;
+  if (!isObject(params) || !isObject(params._meta)) return undefined;
+  return params._meta;
+}
+
+function unsupportedVersion(id: string | number | null, requested: string) {
+  return json(
+    {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: UNSUPPORTED_PROTOCOL_VERSION,
+        message: "Unsupported protocol version",
+        data: { supported: PROTOCOL_VERSIONS, requested },
+      },
+    },
+    400,
+  );
+}
+
+/** Decodes the `=?base64?…?=` sentinel used for non-ASCII header values. */
+function decodeHeaderValue(value: string | null): string | null {
+  if (value === null) return null;
+  const match = value.match(/^=\?base64\?(.*)\?=$/);
+  if (!match) return value;
+  try {
+    const bin = atob(match[1]);
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 function errorResult(text: string): CallToolResult {

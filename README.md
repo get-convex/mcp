@@ -43,8 +43,10 @@ export const mcp = new McpServer(components.mcp, {
   Expired credentials and unused client registrations are cleaned up by a
   cron, and the unauthenticated endpoints are rate limited.
 
-Supports MCP protocol versions 2025-11-25, 2025-06-18 and 2025-03-26 over
-stateless Streamable HTTP.
+Speaks MCP **2026-07-28** (stateless, with `server/discover`, no
+`initialize`) and the earlier 2025-11-25, 2025-06-18 and 2025-03-26 versions
+on the same endpoint, over Streamable HTTP. Everything runs inside your
+Convex deployment: no separate server or auth provider.
 
 Found a bug? Feature request?
 [File it here](https://github.com/get-convex/mcp/issues).
@@ -202,9 +204,14 @@ connection gets all of them.
 
 ## Designing your tools
 
-This package ships an agent skill, `skills/convex-mcp`, that reads your app
-and proposes a task-shaped tool surface (names, descriptions, args, scopes,
-annotations) before wiring it up:
+This package ships two agent skills:
+
+- `skills/convex-mcp` reads your app and proposes a task-shaped tool surface
+  (names, descriptions, args, scopes, annotations) before wiring it up.
+- `skills/convex-mcp-security` audits an app's MCP server — identity, cross-user
+  access, public functions taking `userId`, data in results, prompt-injection
+  and exfiltration paths, the consent page — proving each finding with two
+  real users.
 
 ```sh
 npx skills add get-convex/mcp

@@ -245,6 +245,48 @@ ok("code exchanged once for tokens; replay rejected");
   ok("argument validation and ConvexErrors become isError tool results");
 }
 
+// 7b. MCP 2026-07-28: stateless requests with _meta and mirrored headers.
+{
+  const META = "io.modelcontextprotocol/";
+  const modern = async (method, params = {}) => {
+    const res = await fetch(mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${accessToken}`,
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": method,
+        ...(params.name ? { "Mcp-Name": params.name } : {}),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params: {
+          ...params,
+          _meta: {
+            [`${META}protocolVersion`]: "2026-07-28",
+            [`${META}clientCapabilities`]: {},
+            [`${META}clientInfo`]: { name: "e2e", version: "0" },
+          },
+        },
+      }),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+  const discover = await modern("server/discover");
+  assert.equal(discover.body.result.resultType, "complete");
+  assert.ok(discover.body.result.supportedVersions.includes("2026-07-28"));
+  const list = await modern("tools/list");
+  assert.equal(list.body.result.tools.length, 4);
+  assert.equal(list.body.result.cacheScope, "private");
+  const called = await modern("tools/call", { name: "list_todos", arguments: {} });
+  assert.equal(called.body.result.resultType, "complete");
+  assert.ok(Array.isArray(called.body.result.structuredContent.todos));
+  ok("2026-07-28: server/discover, tools/list, tools/call without initialize");
+}
+
 // 8. Refresh rotation and reuse detection.
 {
   const refreshed = await token({
