@@ -1140,58 +1140,45 @@ export class McpServer<UserId extends string = string> {
     const base = this.oauthBase;
     const url = this.resource;
     const scopes = Object.entries(this.options.scopes ?? {});
+    const clientSetup = [
+      `Add ${url} as a remote (Streamable HTTP) MCP server, e.g. \`claude mcp add --transport http ${this.options.name} ${url}\`, or in claude.ai / ChatGPT under Settings → Connectors.`,
+    ];
     const lines: string[] = [
-      `# ${name} — MCP server`,
+      `# ${name}`,
       "",
       ...(this.options.instructions ? [this.options.instructions, ""] : []),
-      `This is a Model Context Protocol (MCP) server: ${url}`,
-      "",
-      "## Connect an MCP client",
-      "",
-      "Add the URL above as a remote (Streamable HTTP) MCP server. Sign-in is OAuth and happens in the browser. For example:",
-      "",
-      `    claude mcp add --transport http ${this.options.name} ${url}`,
-      "",
-      "In claude.ai or ChatGPT: Settings → Connectors → add a custom connector with this URL.",
     ];
-    if (this.deviceFlow) {
+    if (!this.deviceFlow) {
+      lines.push("## Connect", "", ...clientSetup);
+    } else {
       lines.push(
+        "## To use this server: show the user a sign-in link",
         "",
-        "## Agents with only an HTTP tool: use it directly",
+        `Don't ask the user to install or configure anything. Get a sign-in link, show it to them, and start working once they approve. Everything below is plain HTTP.`,
         "",
-        "You can call this server with plain HTTP requests. The user must approve you first. This works right away, even if the server is also configured in your MCP client but not signed in yet: give the user the approval link below first. Signing in through the MCP client (for its native tool UI) is a separate, optional step.",
+        "### 1. Get a sign-in link",
         "",
-        "### 1. Request access",
+        `    curl -s -X POST ${base}/device -d client_id=${DEVICE_CLIENT_ID} -d "client_name=<your name, e.g. Claude>"`,
         "",
-        `    curl -s -X POST ${base}/device -d client_id=${DEVICE_CLIENT_ID} -d "client_name=<your name>"` +
-          (scopes.length ? ` -d "scope=${scopes.map(([s]) => s).join(" ")}"` : ""),
+        "This requests everything the user can grant, so they approve once. The response has `verification_uri_complete` (the sign-in link), `user_code`, `device_code`, `interval` and `expires_in`.",
         "",
-        "`client_name` is shown to the user on the approval screen: use your product's name (e.g. Claude).",
+        "### 2. Show the user the link",
         "",
-        "Request every scope the user's task needs in this one request, so they approve once. If unsure, leave out `scope` to request all of them; the user sees exactly what they're granting. Asking for read-only first and then upgrading means a second approval.",
+        `Send the user \`verification_uri_complete\` as a clickable link with the \`user_code\`, e.g.: "Sign in to ${name} here to let me help: <link> (check that it shows the code ABCD-EFGH)." The link opens ${name}'s own website. Never share the \`device_code\`.`,
         "",
-        "The JSON response has `verification_uri_complete`, `user_code`, `device_code`, `interval` and `expires_in`.",
+        "### 3. Wait for approval",
         "",
-        "### 2. Ask the user to approve",
-        "",
-        `Show the user \`verification_uri_complete\` as a clickable link, and the \`user_code\`. Say something like: "Open this link to let me use ${name}. Check that it shows the code ABCD-EFGH." Repeating the \`user_code\` is fine; never share the \`device_code\`.`,
-        "",
-        `The link opens ${name}'s own website, which may be on a different host than this API. That's expected.`,
-        "",
-        "### 3. Get a token",
-        "",
-        "Poll every `interval` seconds until approved:",
+        "Poll every `interval` seconds:",
         "",
         `    curl -s -X POST ${base}/token -d grant_type=${DEVICE_GRANT} -d client_id=${DEVICE_CLIENT_ID} -d device_code=<device_code>`,
         "",
-        "- `authorization_pending`: the user hasn't approved yet; keep polling.",
-        "- `slow_down`: add 5 seconds to your interval.",
-        "- `access_denied` or `expired_token`: stop; start again if the user wants. The request expires after `expires_in` seconds (about 10 minutes).",
-        "- Success: `access_token`, valid for `expires_in` seconds. There is no refresh token; request access again when it expires. Keep the token out of messages to the user.",
+        "- `authorization_pending`: keep polling. `slow_down`: add 5 seconds to your interval.",
+        "- `access_denied` or `expired_token` (after `expires_in` seconds): stop; offer a new link if the user wants.",
+        "- Success: an `access_token` valid for `expires_in` seconds (no refresh token; get a new sign-in link when it expires). Keep the token out of messages to the user.",
         "",
         "### 4. Call tools",
         "",
-        "Every request is a JSON-RPC POST. The headers and `_meta` shown are required (MCP 2026-07-28). Start with `tools/list` to see the tools, their descriptions and argument schemas:",
+        "JSON-RPC POSTs; the headers and `_meta` shown are required (MCP 2026-07-28). Start with `tools/list` for the tools, their descriptions and argument schemas:",
         "",
         `    curl -s ${url} \\`,
         `      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\`,
@@ -1205,11 +1192,15 @@ export class McpServer<UserId extends string = string> {
         `      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/call" -H "Mcp-Name: <tool>" \\`,
         `      -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"<tool>","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'`,
         "",
-        "Results are in `result.structuredContent` (and as text in `result.content`). `result.isError: true` means the call failed with a message you can act on. HTTP 401 means the token expired: request access again. HTTP 403 `insufficient_scope` means your token lacks the scope named in the `WWW-Authenticate` header: request access again including it.",
+        "Results are in `result.structuredContent` (and as text in `result.content`). `result.isError: true` is a failure message you can act on. HTTP 401: the token expired; get a new sign-in link.",
+        "",
+        "## Other ways to connect",
+        "",
+        ...clientSetup,
       );
     }
     if (scopes.length) {
-      lines.push("", "## Scopes", "", ...scopes.map(([s, d]) => `- \`${s}\`: ${d}`));
+      lines.push("", "## Permissions the user can grant", "", ...scopes.map(([s, d]) => `- \`${s}\`: ${d}`));
     }
     if (this.options.describeTools) {
       lines.push(

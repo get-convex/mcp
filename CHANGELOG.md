@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.0-alpha.6
+## 0.1.0-alpha.7
+
+- Agent guide (`GET /mcp`) leads with one action: get a sign-in link and
+  show it to the user. It requests all grantable permissions by default
+  (one approval); MCP-client setup moves to "Other ways to connect".
+
+## 0.1.0-alpha.6 (not published)
 
 - Agent guide (`GET /mcp`): request all needed scopes in one approval (omit
   `scope` for all), use the device link right away even when the server is
