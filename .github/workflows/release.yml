@@ -1,58 +1,51 @@
 name: Release
-# Publishes to npm when a version tag is pushed, e.g. `npm version prerelease
-# --preid alpha && git push --follow-tags`. Prereleases (versions with a "-")
-# are published under the `alpha` dist-tag, others under `latest`.
+
+# Publishes to npm when a version tag (v*) is pushed, using npm **trusted
+# publishing** (OIDC) — no stored token. Provenance is attested automatically.
+# The dist-tag is derived from the version: a prerelease like 0.1.0-alpha.0
+# publishes under `alpha`, a plain 0.1.0 under `latest`.
+#
+# Setup (one time, on npmjs.com): the package settings for
+# @convex-dev/mcp → "Trusted Publisher" → GitHub Actions, pointing at
+# repo get-convex/mcp and workflow file `release.yml`.
 on:
   push:
-    tags: ["v*"]
-
-concurrency:
-  group: release
-  cancel-in-progress: false
+    tags:
+      - "v*"
 
 jobs:
   publish:
-    name: Test and publish
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write
+      id-token: write # OIDC token for npm trusted publishing
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Node setup
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "24.x"
+          node-version: 22 # trusted publishing needs Node >= 22.14
           registry-url: "https://registry.npmjs.org"
-          cache: "npm"
-          cache-dependency-path: package.json
-
+      # ...and npm >= 11.5.1
+      - run: npm install -g npm@latest
       - name: Check tag matches package.json
         run: |
-          version=$(node -p "require('./package.json').version")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package.json version $version"
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "v$VERSION" != "$GITHUB_REF_NAME" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
             exit 1
           fi
-
-      - name: Install and build
+      - run: npm install
+      - run: npm run build
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run lint
+      - name: Publish (trusted publishing, no token)
         run: |
-          npm ci
-          npm run build
-
-      - name: Test
-        run: |
-          npm run test
-          npm run typecheck
-          npm run lint
-
-      - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          version=$(node -p "require('./package.json').version")
-          tag=latest
-          case "$version" in *-*) tag=alpha ;; esac
-          npm publish --access public --tag "$tag"
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *-* ]]; then
+            TAG="${VERSION#*-}"; TAG="${TAG%%.*}"
+          else
+            TAG="latest"
+          fi
+          echo "Publishing @convex-dev/mcp@$VERSION under dist-tag: $TAG"
+          npm publish --tag "$TAG" --access public
