@@ -764,7 +764,6 @@ export class McpServer {
     getUserId: (ctx: { auth: Auth }) => Promise<string | null>;
   }) {
     const component = this.component;
-    const server = this;
     const requireUser = async (ctx: { auth: Auth }) => {
       const userId = await opts.getUserId(ctx);
       if (!userId) throw new ConvexError("Not signed in");
@@ -777,9 +776,9 @@ export class McpServer {
         handler: async (ctx, args) => {
           const request = await ctx.runQuery(component.oauth.getAuthRequest, args);
           if (!request) return null;
-          const scopes = server.options.scopes ?? {};
+          const scopes = this.options.scopes ?? {};
           return {
-            serverName: server.options.title ?? server.options.name,
+            serverName: this.options.title ?? this.options.name,
             clientId: request.clientId,
             clientName: request.clientName,
             clientUri: request.clientUri,
@@ -818,7 +817,7 @@ export class McpServer {
                 ? { code }
                 : { error: "access_denied", error_description: "The user denied access" }),
               state: decided.state,
-              iss: server.issuer,
+              iss: this.issuer,
             }),
           };
         },
@@ -860,8 +859,8 @@ export class McpServer {
         handler: async (ctx, args): Promise<{ id: string; apiKey: string; url: string }> => {
           const userId = await requireUser(ctx);
           const name = args.name.trim().slice(0, 100) || "API key";
-          const scopes = args.scopes ?? server.scopeNames;
-          if (scopes.some((s) => !server.scopeNames.includes(s))) {
+          const scopes = args.scopes ?? this.scopeNames;
+          if (scopes.some((s) => !this.scopeNames.includes(s))) {
             throw new ConvexError("Unknown scope");
           }
           const apiKey = randomToken(TOKEN_PREFIX.apiKey);
@@ -869,10 +868,10 @@ export class McpServer {
             userId,
             name,
             scopes,
-            resource: server.resource,
+            resource: this.resource,
             hash: await sha256Hex(apiKey),
           });
-          return { id, apiKey, url: server.resource };
+          return { id, apiKey, url: this.resource };
         },
       }),
     };

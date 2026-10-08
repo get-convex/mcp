@@ -1,42 +1,59 @@
 #root {
-  max-width: 1280px;
+  max-width: 720px;
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  padding: 2rem 1rem;
+  text-align: left;
 }
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
-}
-
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
-}
-
 .card {
-  padding: 2em;
+  margin: 1rem 0;
+  padding: 1.25rem;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 10px;
 }
-
-.read-the-docs {
-  color: #888;
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.spread {
+  justify-content: space-between;
+}
+input:not([type="checkbox"]) {
+  flex: 1;
+  padding: 0.5rem;
+  font: inherit;
+}
+ul {
+  list-style: none;
+  padding: 0;
+}
+li {
+  padding: 0.35rem 0;
+}
+.scopes {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.done {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.muted {
+  opacity: 0.7;
+  font-size: 0.9em;
+}
+.error {
+  color: #e5484d;
+}
+pre,
+code {
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+button.primary {
+  background: #646cff;
+  color: white;
+}
+h1 {
+  font-size: 2rem;
 }

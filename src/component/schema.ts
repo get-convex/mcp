@@ -46,6 +46,8 @@ export default defineSchema({
     resource: v.string(),
     lastUsedAt: v.optional(v.number()),
   })
+    // Lists a user's connections newest first.
+    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
     .index("userId", ["userId"])
     .index("userId_clientId", ["userId", "clientId"]),
 

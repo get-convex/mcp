@@ -14,6 +14,7 @@ export default [
       "example/**/*.config.{js,mjs,cjs,ts,tsx}",
       "**/_generated/",
       "initTemplate.mjs",
+      "example/e2e.mjs",
     ],
   },
   {

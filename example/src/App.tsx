@@ -1,202 +1,196 @@
 import "./App.css";
-import { useAction, useMutation, useQuery } from "convex/react";
-import { api } from "../convex/_generated/api";
+import { useAuthActions } from "@convex-dev/auth/react";
+import {
+  Authenticated,
+  AuthLoading,
+  Unauthenticated,
+  useAction,
+  useMutation,
+  useQuery,
+} from "convex/react";
 import { useState } from "react";
+import { api } from "../convex/_generated/api";
 
-// Fake blog posts (not in database)
-const blogPosts = [
-  {
-    id: "blog-post-1",
-    title: "Getting Started with Convex Components",
-    content:
-      "Convex components are a powerful way to build reusable functionality that can be shared across different applications. In this post, we'll explore how to create and use components in your Convex applications.",
-    author: "Jane Doe",
-    date: "2024-01-15",
-  },
-  {
-    id: "blog-post-2",
-    title: "Building Scalable Comment Systems",
-    content:
-      "Comments are a fundamental feature of many web applications. Learn how to build a scalable comment system using Convex components that can handle thousands of comments efficiently.",
-    author: "John Smith",
-    date: "2024-01-20",
-  },
-];
+const MCP_URL = `${import.meta.env.VITE_CONVEX_SITE_URL}/mcp`;
 
-function BlogPostComments({ postId }: { postId: string }) {
-  const comments = useQuery(api.example.list, { targetId: postId });
-  const addComment = useMutation(api.example.add);
-  const translateComment = useAction(api.example.translateComment);
-  const [commentText, setCommentText] = useState("");
-
-  const handleAddComment = () => {
-    if (commentText.trim()) {
-      addComment({ text: commentText, targetId: postId });
-      setCommentText("");
-    }
-  };
-
-  const handleTranslateComment = async (commentId: string) => {
-    await translateComment({ commentId });
-  };
-
+export default function App() {
+  const isConsent = window.location.pathname === "/connect";
   return (
-    <div
-      style={{
-        marginTop: "1.5rem",
-        padding: "1rem",
-        border: "1px solid rgba(128, 128, 128, 0.3)",
-        borderRadius: "8px",
-      }}
-    >
-      <h4 style={{ marginTop: 0, marginBottom: "1rem" }}>
-        Comments ({comments?.length ?? 0})
-      </h4>
-      <div style={{ marginBottom: "1rem" }}>
-        <input
-          type="text"
-          value={commentText}
-          onChange={(e) => setCommentText(e.target.value)}
-          placeholder="Enter a comment"
-          style={{ marginRight: "0.5rem", padding: "0.5rem", width: "70%" }}
-          onKeyPress={(e) => e.key === "Enter" && handleAddComment()}
-        />
-        <button onClick={handleAddComment}>Add Comment</button>
-      </div>
-      <ul style={{ textAlign: "left", listStyle: "none", padding: 0 }}>
-        {comments?.map((comment) => (
-          <li
-            key={comment._id}
-            style={{
-              marginBottom: "0.5rem",
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              padding: "0.5rem",
-              backgroundColor: "rgba(128, 128, 128, 0.1)",
-              borderRadius: "4px",
-            }}
-          >
-            <span style={{ flex: 1 }}>{comment.text}</span>
-            <button
-              onClick={() => handleTranslateComment(comment._id)}
-              style={{
-                padding: "0.25rem 0.5rem",
-                fontSize: "0.75rem",
-                backgroundColor: "#ff9800",
-                color: "white",
-                border: "none",
-                borderRadius: "4px",
-                cursor: "pointer",
-              }}
-            >
-              🏴‍☠️ Translate to Pirate Talk
-            </button>
-          </li>
-        ))}
-        {comments?.length === 0 && (
-          <li
-            style={{ color: "rgba(128, 128, 128, 0.8)", fontStyle: "italic" }}
-          >
-            No comments yet. Be the first to comment!
-          </li>
-        )}
-      </ul>
-    </div>
+    <main>
+      <AuthLoading>Loading…</AuthLoading>
+      <Unauthenticated>
+        <SignIn reason={isConsent ? "Sign in to connect your agent." : undefined} />
+      </Unauthenticated>
+      <Authenticated>{isConsent ? <Consent /> : <Home />}</Authenticated>
+    </main>
   );
 }
 
-function App() {
-  // Construct the HTTP endpoint URL
-  const convexUrl = import.meta.env.VITE_CONVEX_SITE_URL;
+function SignIn({ reason }: { reason?: string }) {
+  const { signIn } = useAuthActions();
+  return (
+    <section className="card">
+      <h1>Todos</h1>
+      <p>{reason ?? "An example app with an MCP server built in."}</p>
+      <button onClick={() => void signIn("anonymous")}>Sign in as a guest</button>
+    </section>
+  );
+}
 
+/**
+ * The OAuth consent page. The MCP component's /authorize endpoint sends the
+ * user here as /connect?request=…; approving sends them back to the agent.
+ */
+function Consent() {
+  const requestId = new URLSearchParams(window.location.search).get("request") ?? "";
+  const request = useQuery(api.mcp.getAuthRequest, { requestId });
+  const authorize = useAction(api.mcp.authorize);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (request === undefined) return <p>Loading…</p>;
+  if (request === null || request.status !== "pending") {
+    return (
+      <section className="card">
+        <h1>Link expired</h1>
+        <p>Start connecting again from your agent.</p>
+      </section>
+    );
+  }
+  const decide = async (approve: boolean) => {
+    setBusy(true);
+    try {
+      const { redirectUrl } = await authorize({ requestId, approve });
+      window.location.assign(redirectUrl);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+  const name = request.clientName ?? "An MCP client";
+  return (
+    <section className="card">
+      <h1>Connect {name}?</h1>
+      <p>
+        <strong>{name}</strong> wants to use {request.serverName} on your behalf.
+        It will be able to:
+      </p>
+      <ul className="scopes">
+        {request.scopes.map((s) => (
+          <li key={s.name}>{s.description}</li>
+        ))}
+      </ul>
+      <p className="muted">
+        You'll be sent back to <code>{new URL(request.redirectUri).host || request.redirectUri}</code>.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <div className="row">
+        <button disabled={busy} onClick={() => void decide(false)}>
+          Deny
+        </button>
+        <button className="primary" disabled={busy} onClick={() => void decide(true)}>
+          Allow
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function Home() {
+  const { signOut } = useAuthActions();
   return (
     <>
-      <h1>Example App</h1>
-      <div className="card">
-        {blogPosts.map((post) => (
-          <div
-            key={post.id}
-            style={{
-              marginBottom: "2rem",
-              padding: "1.5rem",
-              border: "1px solid rgba(128, 128, 128, 0.3)",
-              borderRadius: "8px",
-            }}
-          >
-            <h2 style={{ marginTop: 0 }}>{post.title}</h2>
-            <div
-              style={{
-                marginBottom: "0.5rem",
-                color: "rgba(128, 128, 128, 0.8)",
-                fontSize: "0.9rem",
-              }}
-            >
-              By {post.author} • {post.date}
-            </div>
-            <p style={{ lineHeight: "1.6", marginBottom: "1rem" }}>
-              {post.content}
-            </p>
-            <BlogPostComments postId={post.id} />
-          </div>
-        ))}
-        <div
-          style={{
-            marginTop: "1.5rem",
-            padding: "1rem",
-            backgroundColor: "rgba(128, 128, 128, 0.1)",
-            borderRadius: "8px",
-          }}
-        >
-          <h3>HTTP Endpoint Demo</h3>
-          <p style={{ fontSize: "0.9rem", marginBottom: "0.5rem" }}>
-            The component exposes an HTTP endpoint to get the latest comment:
-          </p>
-          <div
-            style={{
-              display: "flex",
-              gap: "0.5rem",
-              flexDirection: "column",
-              justifyContent: "center",
-            }}
-          >
-            {blogPosts.map((post) => {
-              const httpUrl =
-                convexUrl +
-                `/comments/last?targetId=${encodeURIComponent(post.id)}`;
-              return (
-                <a
-                  key={post.id}
-                  href={httpUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: "inline-block",
-                    padding: "0.5rem 1rem",
-                    backgroundColor: "#007bff",
-                    color: "white",
-                    textDecoration: "none",
-                    borderRadius: "4px",
-                    fontSize: "0.9rem",
-                  }}
-                >
-                  {post.title} - HTTP Endpoint
-                </a>
-              );
-            })}
-          </div>
-          <p style={{ fontSize: "0.8rem", color: "#666", marginTop: "0.5rem" }}>
-            See <code>example/convex/http.ts</code> for the HTTP route
-            configuration
-          </p>
-        </div>
-        <p>
-          See <code>example/convex/example.ts</code> for all the ways to use
-          this component
-        </p>
-      </div>
+      <header className="row spread">
+        <h1>Todos</h1>
+        <button onClick={() => void signOut()}>Sign out</button>
+      </header>
+      <Todos />
+      <Agents />
     </>
   );
 }
 
-export default App;
+function Todos() {
+  const todos = useQuery(api.todos.list);
+  const add = useMutation(api.todos.add);
+  const toggle = useMutation(api.todos.toggle);
+  const [text, setText] = useState("");
+  return (
+    <section className="card">
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (text.trim()) void add({ text: text.trim() });
+          setText("");
+        }}
+      >
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a todo" />
+        <button type="submit">Add</button>
+      </form>
+      <ul className="todos">
+        {todos?.map((t) => (
+          <li key={t._id}>
+            <label>
+              <input type="checkbox" checked={t.done} onChange={() => void toggle({ id: t._id })} />
+              <span className={t.done ? "done" : ""}>{t.text}</span>
+            </label>
+          </li>
+        ))}
+        {todos?.length === 0 && <li className="muted">Nothing yet — ask your agent to add one.</li>}
+      </ul>
+    </section>
+  );
+}
+
+/** "Connected agents": how to connect, existing connections, API keys. */
+function Agents() {
+  const connections = useQuery(api.mcp.listConnections);
+  const revoke = useMutation(api.mcp.revokeConnection);
+  const createApiKey = useAction(api.mcp.createApiKey);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  return (
+    <section className="card">
+      <h2>Use with your agent</h2>
+      <p>
+        Add this MCP server URL to Claude, ChatGPT, Cursor or any MCP client. You'll be asked to
+        sign in here and approve it.
+      </p>
+      <pre>{MCP_URL}</pre>
+      <p className="muted">
+        For CLIs, create an API key and run{" "}
+        <code>claude mcp add --transport http todos {MCP_URL} --header "Authorization: Bearer &lt;key&gt;"</code>
+      </p>
+      <button
+        onClick={() =>
+          void createApiKey({ name: `API key ${new Date().toLocaleString()}` }).then((r) =>
+            setNewKey(r.apiKey),
+          )
+        }
+      >
+        Create API key
+      </button>
+      {newKey && (
+        <p>
+          Copy it now, it won't be shown again: <code>{newKey}</code>
+        </p>
+      )}
+      <h3>Connected agents</h3>
+      <ul className="connections">
+        {connections?.map((c) => (
+          <li key={c.id} className="row spread">
+            <span>
+              <strong>{c.name}</strong>{" "}
+              <span className="muted">
+                {c.kind === "apiKey" ? "API key" : "OAuth"} · {c.scopes.join(", ") || "all tools"}
+                {c.lastUsedAt ? ` · last used ${new Date(c.lastUsedAt).toLocaleString()}` : ""}
+              </span>
+            </span>
+            <button onClick={() => void revoke({ id: c.id })}>Disconnect</button>
+          </li>
+        ))}
+        {connections?.length === 0 && <li className="muted">No agents connected yet.</li>}
+      </ul>
+    </section>
+  );
+}

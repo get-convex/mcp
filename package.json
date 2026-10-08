@@ -40,7 +40,8 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills"
   ],
   "exports": {
     "./package.json": "./package.json",
