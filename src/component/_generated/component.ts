@@ -23,32 +23,179 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
-    lib: {
-      add: FunctionReference<
+    clients: {
+      get: FunctionReference<
+        "query",
+        "internal",
+        { clientId: string },
+        null | {
+          clientId: string;
+          clientName?: string;
+          clientUri?: string;
+          logoUri?: string;
+          redirectUris: Array<string>;
+        },
+        Name
+      >;
+      upsert: FunctionReference<
         "mutation",
         "internal",
-        { targetId: string; text: string; userId: string },
+        {
+          clientId: string;
+          clientName?: string;
+          clientUri?: string;
+          logoUri?: string;
+          redirectUris: Array<string>;
+        },
+        null,
+        Name
+      >;
+    };
+    grants: {
+      createApiKey: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          hash: string;
+          name: string;
+          resource: string;
+          scopes: Array<string>;
+          userId: string;
+        },
         string,
         Name
       >;
       list: FunctionReference<
         "query",
         "internal",
-        { limit?: number; targetId: string },
+        { userId: string },
         Array<{
           _creationTime: number;
           _id: string;
-          targetId: string;
-          text: string;
+          clientId?: string;
+          kind: "oauth" | "apiKey";
+          lastUsedAt?: number;
+          name: string;
+          resource: string;
+          scopes: Array<string>;
           userId: string;
         }>,
         Name
       >;
-      translate: FunctionReference<
-        "action",
+      revoke: FunctionReference<
+        "mutation",
         "internal",
-        { baseUrl: string; commentId: string },
-        string,
+        { grantId: string; userId: string },
+        boolean,
+        Name
+      >;
+    };
+    oauth: {
+      createAuthRequest: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          clientId: string;
+          codeChallenge: string;
+          redirectUri: string;
+          requestId: string;
+          resource: string;
+          scopes: Array<string>;
+          state?: string;
+          ttlMs: number;
+        },
+        null,
+        Name
+      >;
+      decideAuthRequest: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          approved: boolean;
+          codeHash?: string;
+          codeTtlMs: number;
+          requestId: string;
+          userId: string;
+        },
+        null | { redirectUri: string; state?: string },
+        Name
+      >;
+      exchangeCode: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          accessHash: string;
+          accessTtlMs: number;
+          clientId: string;
+          codeHash: string;
+          redirectUri: string;
+          refreshHash: string;
+          refreshTtlMs: number;
+          resource?: string;
+          verifierChallenge: string;
+        },
+        { ok: true; scopes: Array<string> } | { error: string; ok: false },
+        Name
+      >;
+      getAuthRequest: FunctionReference<
+        "query",
+        "internal",
+        { requestId: string },
+        null | {
+          clientId: string;
+          clientName?: string;
+          clientUri?: string;
+          logoUri?: string;
+          redirectUri: string;
+          scopes: Array<string>;
+          status: "pending" | "approved" | "denied";
+        },
+        Name
+      >;
+      refresh: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          accessHash: string;
+          accessTtlMs: number;
+          clientId: string;
+          newRefreshHash: string;
+          refreshHash: string;
+          refreshTtlMs: number;
+          resource?: string;
+        },
+        { ok: true; scopes: Array<string> } | { error: string; ok: false },
+        Name
+      >;
+      revokeToken: FunctionReference<
+        "mutation",
+        "internal",
+        { clientId?: string; hash: string },
+        null,
+        Name
+      >;
+    };
+    tokens: {
+      touch: FunctionReference<
+        "mutation",
+        "internal",
+        { grantId: string },
+        null,
+        Name
+      >;
+      verify: FunctionReference<
+        "query",
+        "internal",
+        { hash: string },
+        null | {
+          clientId?: string;
+          grantId: string;
+          kind: "access" | "apiKey";
+          resource: string;
+          scopes: Array<string>;
+          stale: boolean;
+          userId: string;
+        },
         Name
       >;
     };

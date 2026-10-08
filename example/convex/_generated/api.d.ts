@@ -8,7 +8,10 @@
  * @module
  */
 
-import type * as example from "../example.js";
+import type * as auth from "../auth.js";
+import type * as http from "../http.js";
+import type * as mcp from "../mcp.js";
+import type * as todos from "../todos.js";
 
 import type {
   ApiFromModules,
@@ -17,7 +20,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  example: typeof example;
+  auth: typeof auth;
+  http: typeof http;
+  mcp: typeof mcp;
+  todos: typeof todos;
 }>;
 
 /**
@@ -47,5 +53,5 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  sampleComponent: import("@example/sample-component/_generated/component.js").ComponentApi<"sampleComponent">;
+  mcp: import("@convex-dev/mcp/_generated/component.js").ComponentApi<"mcp">;
 };

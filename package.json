@@ -1,16 +1,21 @@
 {
-  "name": "@example/sample-component",
-  "description": "A sample component component for Convex.",
-  "repository": "github:example-org/sample-component",
-  "homepage": "https://github.com/example-org/sample-component#readme",
+  "name": "@convex-dev/mcp",
+  "description": "Turn your Convex app into an MCP server, so your users can use your app from their AI agents.",
+  "repository": "github:get-convex/mcp",
+  "homepage": "https://github.com/get-convex/mcp#readme",
   "bugs": {
-    "url": "https://github.com/example-org/sample-component/issues"
+    "url": "https://github.com/get-convex/mcp/issues"
   },
   "version": "0.1.0",
   "license": "Apache-2.0",
   "keywords": [
     "convex",
-    "component"
+    "component",
+    "mcp",
+    "model context protocol",
+    "oauth",
+    "ai",
+    "agents"
   ],
   "type": "module",
   "scripts": {
@@ -43,10 +48,6 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
-    "./react": {
-      "types": "./dist/react/index.d.ts",
-      "default": "./dist/react/index.js"
-    },
     "./test": "./src/test.ts",
     "./_generated/component.js": {
       "types": "./dist/component/_generated/component.d.ts"
@@ -64,10 +65,11 @@
     }
   },
   "peerDependencies": {
-    "convex": "^1.43.0",
-    "react": "^18.3.1 || ^19.0.0"
+    "convex": "^1.43.0"
   },
   "devDependencies": {
+    "@auth/core": "^0.41.1",
+    "@convex-dev/auth": "^0.0.96",
     "@convex-dev/eslint-plugin": "^5.0.0",
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/eslintrc": "^3.3.6",

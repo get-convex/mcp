@@ -1,7 +1,7 @@
 import { defineApp } from "convex/server";
-import sampleComponent from "@example/sample-component/convex.config.js";
+import mcp from "@convex-dev/mcp/convex.config.js";
 
 const app = defineApp();
-app.use(sampleComponent, { httpPrefix: "/comments/" });
+app.use(mcp);
 
 export default app;
