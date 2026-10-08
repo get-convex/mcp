@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.1
+
+- First release published from CI (npm trusted publishing).
+
 ## 0.1.0-alpha.0
 
 - First alpha: MCP server for Convex apps with a built-in OAuth 2.1
