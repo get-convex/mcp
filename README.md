@@ -247,8 +247,10 @@ public client ID `mcp-agent`. The user gets a link to your consent page,
 `kind: "device"` and a `userCode`. Your consent page should:
 
 - show the `userCode` and **require** the user to confirm it matches what
-  their agent shows (a checkbox), before enabling Allow. This is the main
-  defense against someone sending a victim their own approval link;
+  their agent shows (a checkbox) before enabling Allow, then pass it to
+  `authorize({ requestId, approve: true, userCode })`. The server refuses
+  device approvals without the matching code, so a consent page that skips
+  this step fails safely instead of becoming a phishing hole;
 - label `clientName` as unverified, since the agent reports it about itself;
 - after `authorize`, which returns `redirectUrl: null` for device requests,
   tell the user to go back to their agent;

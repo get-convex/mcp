@@ -332,6 +332,7 @@ describe("lint", () => {
 });
 
 describe("GET /mcp guide", () => {
+
   test("explains device sign-in; hides tools unless describeTools", async () => {
     const s = server({ secret_tool: tool({ description: "Internal thing", handler: async () => null }) });
     const text = s.guide();

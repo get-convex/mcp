@@ -124,7 +124,12 @@ function Approve({ requestId }: { requestId: string }) {
   const decide = async (approve: boolean) => {
     setBusy(true);
     try {
-      const { redirectUrl } = await authorize({ requestId, approve });
+      const { redirectUrl } = await authorize({
+        requestId,
+        approve,
+        // Device requests: pass the code the user just confirmed.
+        ...(isDevice && approve ? { userCode: request.userCode } : {}),
+      });
       if (redirectUrl) window.location.assign(redirectUrl);
       else setDone(approve ? "approved" : "denied");
     } catch (e) {

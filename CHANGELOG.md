@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.5
+
+- Device approvals require the confirmed code:
+  `authorize({ requestId, approve: true, userCode })`. A consent page that
+  doesn't show and confirm the code can't approve device requests (clear
+  error), so forgetting that step fails closed.
+
 ## 0.1.0-alpha.4
 
 - Paste the URL into any agent chat: `GET /mcp` returns agent-readable

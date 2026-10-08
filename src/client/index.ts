@@ -205,7 +205,10 @@ export type McpServerOptions<UserId extends string = string> = {
   /**
    * Let agents that can only make HTTP requests sign in with the device flow
    * (RFC 8628): they get a link for the user to approve, then a short-lived
-   * access token (no refresh token). Default true.
+   * access token (no refresh token). Default true. Your consent page must
+   * show `userCode` for `kind: "device"` requests and pass the code the user
+   * confirmed to `authorize({ userCode })`: the server refuses device
+   * approvals without it, so a page that skips the check fails closed.
    */
   deviceFlow?: boolean;
   /**
@@ -1315,7 +1318,15 @@ export class McpServer<UserId extends string = string> {
        * return to their agent.
        */
       authorize: actionGeneric({
-        args: { requestId: v.string(), approve: v.boolean() },
+        args: {
+          requestId: v.string(),
+          approve: v.boolean(),
+          /**
+           * Device requests: the code the user confirmed matches their
+           * agent. Required to approve; anything else is refused.
+           */
+          userCode: v.optional(v.string()),
+        },
         handler: async (ctx, args): Promise<{ redirectUrl: string | null }> => {
           const userId = await requireUser(ctx);
           const code = args.approve ? randomToken(TOKEN_PREFIX.code) : undefined;
@@ -1325,11 +1336,22 @@ export class McpServer<UserId extends string = string> {
             approved: args.approve,
             codeHash: code ? await sha256Hex(code) : undefined,
             codeTtlMs: CODE_TTL_MS,
+            confirmedUserCode:
+              args.userCode === undefined
+                ? undefined
+                : (normalizeUserCode(args.userCode) ?? undefined),
           });
           if (!decided) {
             throw new ConvexError("This request has expired. Start again from your agent.");
           }
-          if (decided.kind === "device") return { redirectUrl: null };
+          if (decided.kind === "device") {
+            if (!decided.confirmed) {
+              throw new ConvexError(
+                "Confirm the code your agent is showing before approving.",
+              );
+            }
+            return { redirectUrl: null };
+          }
           return {
             redirectUrl: withParams(decided.redirectUri, {
               ...(code

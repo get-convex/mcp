@@ -303,6 +303,7 @@ describe("device flow", () => {
     const row = await t.run((ctx) => ctx.db.query("authRequests").first());
     expect(row && "pollIntervalMs" in row && row.pollIntervalMs).toBe(10_000);
 
+    // Approval without the confirmed user code is refused.
     expect(
       await t.mutation(api.oauth.decideAuthRequest, {
         requestId: "dreq",
@@ -310,7 +311,17 @@ describe("device flow", () => {
         approved: true,
         codeTtlMs: 60_000,
       }),
-    ).toEqual({ kind: "device" });
+    ).toEqual({ kind: "device", confirmed: false });
+    expect(await poll(t)).toEqual({ ok: false, error: "slow_down" });
+    expect(
+      await t.mutation(api.oauth.decideAuthRequest, {
+        requestId: "dreq",
+        userId: "user1",
+        approved: true,
+        codeTtlMs: 60_000,
+        confirmedUserCode: "BCDF-GHJK",
+      }),
+    ).toEqual({ kind: "device", confirmed: true });
     expect(await poll(t)).toEqual({ ok: true, scopes: ["read"] });
     expect(await t.query(api.tokens.verify, { hash: "dat", now: Date.now() })).toMatchObject({
       userId: "user1",
@@ -350,6 +361,7 @@ describe("device flow", () => {
       userId: "user1",
       approved: true,
       codeTtlMs: 60_000,
+      confirmedUserCode: "BCDF-GHJK",
     });
     expect(
       await t.mutation(api.oauth.exchangeCode, { ...exchange, codeHash: "dc1" }),

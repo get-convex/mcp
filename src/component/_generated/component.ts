@@ -144,12 +144,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           approved: boolean;
           codeHash?: string;
           codeTtlMs: number;
+          confirmedUserCode?: string;
           requestId: string;
           userId: string;
         },
         | null
         | { kind: "redirect"; redirectUri: string; state?: string }
-        | { kind: "device" },
+        | { confirmed: boolean; kind: "device" },
         Name
       >;
       exchangeCode: FunctionReference<

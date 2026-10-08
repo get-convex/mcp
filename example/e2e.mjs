@@ -445,7 +445,15 @@ ok("code exchanged once for tokens; replay rejected");
   assert.equal(details.kind, "device");
   assert.equal(details.userCode, dev.user_code);
   assert.equal(details.clientName, "Chat scriptAgent");
-  const { redirectUrl } = await convex.action(api.mcp.authorize, { requestId, approve: true });
+  await assert.rejects(
+    convex.action(api.mcp.authorize, { requestId, approve: true }),
+    /Confirm the code/,
+  );
+  const { redirectUrl } = await convex.action(api.mcp.authorize, {
+    requestId,
+    approve: true,
+    userCode: dev.user_code,
+  });
   assert.equal(redirectUrl, null);
 
   const got = await poll();

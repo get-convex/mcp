@@ -193,6 +193,9 @@ export const decideAuthRequest = mutation({
     approved: v.boolean(),
     codeHash: v.optional(v.string()),
     codeTtlMs: v.number(),
+    // Device approvals must echo the user code the user confirmed matches
+    // their agent, so a consent page that skips that step can't approve.
+    confirmedUserCode: v.optional(v.string()),
   },
   returns: v.union(
     v.null(),
@@ -201,7 +204,7 @@ export const decideAuthRequest = mutation({
       redirectUri: v.string(),
       state: v.optional(v.string()),
     }),
-    v.object({ kind: v.literal("device") }),
+    v.object({ kind: v.literal("device"), confirmed: v.boolean() }),
   ),
   handler: async (ctx, args) => {
     const request = await ctx.db
@@ -216,11 +219,14 @@ export const decideAuthRequest = mutation({
       return null;
     }
     if (request.kind === "device") {
+      if (args.approved && args.confirmedUserCode !== request.userCode) {
+        return { kind: "device" as const, confirmed: false };
+      }
       await ctx.db.patch("authRequests", request._id, {
         status: args.approved ? "approved" : "denied",
         userId: args.userId,
       });
-      return { kind: "device" as const };
+      return { kind: "device" as const, confirmed: true };
     }
     if (args.approved) {
       if (!args.codeHash) throw new Error("codeHash required to approve");

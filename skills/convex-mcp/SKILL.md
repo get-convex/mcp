@@ -113,7 +113,9 @@ mcp.registerRoutes(http); // /mcp, /mcp/oauth/*, /.well-known/*
   `window.location.assign(redirectUrl)` (when it's `null`, the request came
   from an agent using the device flow: show "you can return to your agent").
   For `kind: "device"` requests also show `userCode` and require a
-  "this matches my agent" checkbox before Allow; offer a code-entry box
+  "this matches my agent" checkbox before Allow, and pass it as
+  `authorize({ …, userCode })` (required: device approvals without the
+  matching code are refused); offer a code-entry box
   (`findAuthRequest`) when the page has no `?request=`.
 - Don't let the consent page be framed (clickjacking). Best: send
   `Content-Security-Policy: frame-ancestors 'none'` from your host
