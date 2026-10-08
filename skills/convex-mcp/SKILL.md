@@ -90,7 +90,11 @@ mcp.registerRoutes(http); // /mcp, /mcp/oauth/*, /.well-known/*
 - Consent page at `/connect?request=…`: if signed out, sign in and come back
   to the same URL; show `getAuthRequest` (client name, scopes, redirect
   host); Allow/Deny call `authorize({ requestId, approve })` and
-  `window.location.assign(redirectUrl)`.
+  `window.location.assign(redirectUrl)`. Serve it with
+  `Content-Security-Policy: frame-ancestors 'none'` so it can't be
+  clickjacked inside another site's iframe.
+- Add `returns` to tools that return objects: results are checked against it,
+  so it also stops fields you didn't list from leaking to the agent.
 - Settings: show the MCP URL, `listConnections` with "Disconnect"
   (`revokeConnection`), and "Create API key" (`createApiKey`, show once) for
   CLI agents: `claude mcp add --transport http acme <url> --header "Authorization: Bearer <key>"`.
@@ -106,10 +110,20 @@ curl -s $SITE/mcp -H "Authorization: Bearer $KEY" -H 'Content-Type: application/
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Call each tool once with realistic arguments and once with a bad ID owned by
-nobody (expect an `isError` result, not a crash). For a full OAuth check,
-connect the MCP Inspector (`npx @modelcontextprotocol/inspector`) or Claude
-to the URL.
+Call each tool once with realistic arguments, and once with a bad ID (expect
+an `isError` result, not a crash).
+
+**Cross-user check (required for every tool that takes an ID):** create a
+second user with their own data and an API key, then call each tool with the
+second user's key and a **valid** ID belonging to the first user. Every call
+must fail or return nothing, never the other user's data. Malformed or
+nonexistent IDs don't prove anything here.
+
+Write a `convex-test` test for this too (`@convex-dev/mcp/test` +
+`t.fetch("/mcp", …)`, see the package's `example/convex/mcp.test.ts`).
+
+For a full OAuth check, connect the MCP Inspector
+(`npx @modelcontextprotocol/inspector`) or Claude to the URL.
 
 ## Don'ts
 

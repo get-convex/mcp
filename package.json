@@ -98,5 +98,8 @@
     "vitest": "4.1.11"
   },
   "types": "./dist/client/index.d.ts",
-  "module": "./dist/client/index.js"
+  "module": "./dist/client/index.js",
+  "dependencies": {
+    "@convex-dev/rate-limiter": "^0.4.1"
+  }
 }

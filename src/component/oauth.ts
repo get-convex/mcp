@@ -2,6 +2,7 @@
 // these functions: the caller generates them and passes SHA-256 hashes.
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server.js";
+import { rateLimiter } from "./limits.js";
 import { deleteGrant, issueTokens } from "./tokens.js";
 
 const ttls = {
@@ -25,14 +26,25 @@ export const createAuthRequest = mutation({
     resource: v.string(),
     ttlMs: v.number(),
   },
-  returns: v.null(),
+  returns: v.union(
+    v.object({ ok: v.literal(true) }),
+    v.object({ ok: v.literal(false), retryAfterMs: v.number() }),
+  ),
   handler: async (ctx, { ttlMs, ...args }) => {
+    for (const limit of [
+      await rateLimiter.limit(ctx, "authRequestPerClient", { key: args.clientId }),
+      await rateLimiter.limit(ctx, "authRequestGlobal"),
+    ]) {
+      if (!limit.ok) {
+        return { ok: false as const, retryAfterMs: limit.retryAfter };
+      }
+    }
     await ctx.db.insert("authRequests", {
       ...args,
       status: "pending",
       expiresAt: Date.now() + ttlMs,
     });
-    return null;
+    return { ok: true as const };
   },
 });
 
@@ -158,23 +170,22 @@ export const exchangeCode = mutation({
       return { ok: false as const, error: "invalid_grant" };
     }
     const userId = request.userId;
-    // One grant per (user, client); re-authorizing replaces the old tokens.
-    const existing = await ctx.db
-      .query("grants")
-      .withIndex("userId_clientId", (q) =>
-        q.eq("userId", userId).eq("clientId", request.clientId),
-      )
-      .unique();
-    if (existing) await deleteGrant(ctx, existing);
     const client = await ctx.db
       .query("clients")
       .withIndex("clientId", (q) => q.eq("clientId", request.clientId))
       .unique();
+    if (!client) return { ok: false as const, error: "invalid_grant" };
+    // A client that completed an authorization is kept.
+    if (client.expiresAt !== undefined) {
+      await ctx.db.patch("clients", client._id, { expiresAt: undefined });
+    }
+    // Every authorization is its own connection: the same client (e.g. one
+    // CIMD client ID used on several machines) can be connected many times.
     const grantId = await ctx.db.insert("grants", {
       userId,
       kind: "oauth",
       clientId: request.clientId,
-      name: client?.clientName ?? "MCP client",
+      name: client.clientName ?? "MCP client",
       scopes: request.scopes,
       resource: request.resource,
     });
@@ -218,16 +229,7 @@ export const refresh = mutation({
     ) {
       return { ok: false as const, error: "invalid_grant" };
     }
-    // Keep only the most recently rotated token for reuse detection.
-    const previous = await ctx.db
-      .query("tokens")
-      .withIndex("grantId", (q) => q.eq("grantId", grant._id))
-      .take(1000);
-    for (const old of previous) {
-      if (old.kind === "refresh" && old.rotatedAt !== undefined) {
-        await ctx.db.delete("tokens", old._id);
-      }
-    }
+    // Keep the rotated token (until it expires) to detect replays.
     await ctx.db.patch("tokens", token._id, { rotatedAt: Date.now() });
     await issueTokens(ctx, grant._id, {
       accessHash: args.accessHash,

@@ -11,6 +11,7 @@
 import type * as clients from "../clients.js";
 import type * as crons from "../crons.js";
 import type * as grants from "../grants.js";
+import type * as limits from "../limits.js";
 import type * as oauth from "../oauth.js";
 import type * as tokens from "../tokens.js";
 
@@ -25,6 +26,7 @@ const fullApi: ApiFromModules<{
   clients: typeof clients;
   crons: typeof crons;
   grants: typeof grants;
+  limits: typeof limits;
   oauth: typeof oauth;
   tokens: typeof tokens;
 }> = anyApi as any;
@@ -55,4 +57,6 @@ export const internal: FilterApi<
   FunctionReference<any, "internal">
 > = anyApi as any;
 
-export const components = componentsGeneric() as unknown as {};
+export const components = componentsGeneric() as unknown as {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};

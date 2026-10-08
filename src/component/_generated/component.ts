@@ -37,7 +37,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
-      upsert: FunctionReference<
+      register: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          clientId: string;
+          clientName?: string;
+          clientUri?: string;
+          logoUri?: string;
+          redirectUris: Array<string>;
+        },
+        { ok: true } | { ok: false; retryAfterMs: number },
+        Name
+      >;
+      upsertMetadataDocument: FunctionReference<
         "mutation",
         "internal",
         {
@@ -104,7 +117,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           state?: string;
           ttlMs: number;
         },
-        null,
+        { ok: true } | { ok: false; retryAfterMs: number },
         Name
       >;
       decideAuthRequest: FunctionReference<
@@ -186,7 +199,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       verify: FunctionReference<
         "query",
         "internal",
-        { hash: string },
+        { hash: string; now: number },
         null | {
           clientId?: string;
           grantId: string;

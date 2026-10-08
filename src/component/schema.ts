@@ -9,7 +9,11 @@ export default defineSchema({
     clientUri: v.optional(v.string()),
     logoUri: v.optional(v.string()),
     redirectUris: v.array(v.string()),
-  }).index("clientId", ["clientId"]),
+    // Set for DCR clients until their first successful authorization.
+    expiresAt: v.optional(v.number()),
+  })
+    .index("clientId", ["clientId"])
+    .index("expiresAt", ["expiresAt"]),
 
   // A pending /authorize request, waiting for the signed-in user to approve
   // it on the app's consent page. Once approved it holds the (hashed)
@@ -46,10 +50,7 @@ export default defineSchema({
     resource: v.string(),
     lastUsedAt: v.optional(v.number()),
   })
-    // Lists a user's connections newest first.
-    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
-    .index("userId", ["userId"])
-    .index("userId_clientId", ["userId", "clientId"]),
+    .index("userId", ["userId"]),
 
   tokens: defineTable({
     hash: v.string(),
@@ -61,8 +62,9 @@ export default defineSchema({
     ),
     // Absent for API keys, which live until revoked.
     expiresAt: v.optional(v.number()),
-    // Set when a refresh token has been rotated. Presenting it again means
-    // it leaked, so the whole grant is revoked.
+    // Set when a refresh token has been rotated. The row is kept until it
+    // expires: presenting it again means the token family leaked, so the
+    // whole grant is revoked.
     rotatedAt: v.optional(v.number()),
   })
     .index("hash", ["hash"])

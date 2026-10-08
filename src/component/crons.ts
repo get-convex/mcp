@@ -5,7 +5,7 @@ import { internalMutation } from "./_generated/server.js";
 
 const BATCH = 200;
 
-/** Deletes expired auth requests, codes and tokens in bounded batches. */
+/** Deletes expired auth requests, codes, tokens and unused clients. */
 export const cleanup = internalMutation({
   args: {},
   returns: v.null(),
@@ -22,7 +22,17 @@ export const cleanup = internalMutation({
       .withIndex("expiresAt", (q) => q.gt("expiresAt", 0).lt("expiresAt", now))
       .take(BATCH);
     for (const t of tokens) await ctx.db.delete("tokens", t._id);
-    if (requests.length === BATCH || tokens.length === BATCH) {
+    // DCR clients that never completed an authorization.
+    const clients = await ctx.db
+      .query("clients")
+      .withIndex("expiresAt", (q) => q.gt("expiresAt", 0).lt("expiresAt", now))
+      .take(BATCH);
+    for (const c of clients) await ctx.db.delete("clients", c._id);
+    if (
+      requests.length === BATCH ||
+      tokens.length === BATCH ||
+      clients.length === BATCH
+    ) {
       await ctx.scheduler.runAfter(0, internal.crons.cleanup, {});
     }
     return null;

@@ -1,3 +1,7 @@
 import { defineComponent } from "convex/server";
+import rateLimiter from "@convex-dev/rate-limiter/convex.config.js";
 
-export default defineComponent("mcp");
+const component = defineComponent("mcp");
+component.use(rateLimiter);
+
+export default component;

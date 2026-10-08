@@ -147,6 +147,13 @@ export type McpServerOptions = {
    * Agents calling from servers send no Origin and are unaffected.
    */
   allowedOrigins?: string[];
+  /**
+   * Accept OAuth clients identified by a client ID metadata document URL
+   * (MCP 2025-11-25) from these hosts, e.g. `["claude.ai"]`. Off by default:
+   * fetching arbitrary URLs from your backend is an SSRF risk. Dynamic client
+   * registration works for all clients either way.
+   */
+  clientMetadataDocumentHosts?: string[];
   accessTokenTtlMs?: number;
   refreshTokenTtlMs?: number;
 };
@@ -312,7 +319,9 @@ export class McpServer {
       token_endpoint_auth_methods_supported: ["none"],
       revocation_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
-      client_id_metadata_document_supported: true,
+      ...(this.options.clientMetadataDocumentHosts?.length
+        ? { client_id_metadata_document_supported: true }
+        : {}),
       authorization_response_iss_parameter_supported: true,
       ...(this.scopeNames.length ? { scopes_supported: this.scopeNames } : {}),
     };
@@ -355,6 +364,7 @@ export class McpServer {
     if (!match) return null;
     const info = await ctx.runQuery(this.component.tokens.verify, {
       hash: await sha256Hex(match[1]),
+      now: Date.now(),
     });
     // Tokens are audience-bound to this server (RFC 8707).
     if (!info || info.resource !== this.resource) return null;
@@ -536,6 +546,15 @@ export class McpServer {
         ...(isError ? { isError } : {}),
       };
     }
+    if (t.returns) {
+      // Enforce `returns` so results match the advertised outputSchema and
+      // can't carry fields the developer didn't intend to expose.
+      const checked = checkValue(t.returns, toJsonValue(value), "result");
+      if (!checked.ok) {
+        console.error(`MCP tool "${t.name}" returned an invalid result: ${checked.error}`);
+        return errorResult(`Tool "${t.name}" failed. Please try again later.`);
+      }
+    }
     return toCallToolResult(value, t.returns !== undefined);
   }
 
@@ -556,10 +575,11 @@ export class McpServer {
       return oauthError(parsed.error, parsed.description, 400);
     }
     const clientId = randomToken("mcp_client_", 16);
-    await ctx.runMutation(this.component.clients.upsert, {
+    const registered = await ctx.runMutation(this.component.clients.register, {
       clientId,
       ...parsed.client,
     });
+    if (!registered.ok) return tooManyRequests(registered.retryAfterMs);
     return json(
       {
         client_id: clientId,
@@ -580,9 +600,11 @@ export class McpServer {
   /** Looks up a registered client, fetching its metadata document if needed. */
   private async resolveClient(ctx: ToolCtx, clientId: string) {
     if (isMetadataDocumentUrl(clientId)) {
+      const host = new URL(clientId).hostname;
+      if (!this.options.clientMetadataDocumentHosts?.includes(host)) return null;
       const fetched = await fetchClientMetadata(clientId);
       if (!fetched) return null;
-      await ctx.runMutation(this.component.clients.upsert, {
+      await ctx.runMutation(this.component.clients.upsertMetadataDocument, {
         clientId,
         ...fetched,
       });
@@ -638,7 +660,7 @@ export class McpServer {
     if (!scopes) return fail("invalid_scope", "Unknown scope requested");
 
     const requestId = randomToken("mcp_req_", 16);
-    await ctx.runMutation(this.component.oauth.createAuthRequest, {
+    const created = await ctx.runMutation(this.component.oauth.createAuthRequest, {
       requestId,
       clientId: client.clientId,
       redirectUri: target,
@@ -648,6 +670,9 @@ export class McpServer {
       resource: this.resource,
       ttlMs: AUTH_REQUEST_TTL_MS,
     });
+    if (!created.ok) {
+      return fail("temporarily_unavailable", "Too many requests, try again shortly");
+    }
     return redirect(withParams(this.options.consentUrl, { request: requestId }));
   }
 
@@ -935,6 +960,13 @@ function oauthError(error: string, description: string | undefined, status: numb
   );
 }
 
+function tooManyRequests(retryAfterMs: number) {
+  return json({ error: "too_many_requests" }, 429, {
+    ...PUBLIC_CORS,
+    "Retry-After": String(Math.max(1, Math.ceil(retryAfterMs / 1000))),
+  });
+}
+
 function redirect(location: string) {
   return new Response(null, {
     status: 302,
@@ -1067,25 +1099,22 @@ function isMetadataDocumentUrl(clientId: string) {
   }
 }
 
-/** Fetches a client ID metadata document (MCP 2025-11-25). */
+const MAX_METADATA_BYTES = 10_000;
+
+/**
+ * Fetches a client ID metadata document (MCP 2025-11-25). Only called for
+ * hosts in `clientMetadataDocumentHosts`.
+ */
 async function fetchClientMetadata(clientId: string) {
-  const host = new URL(clientId).hostname;
-  if (
-    host === "localhost" ||
-    /^[0-9.]+$/.test(host) ||
-    host.startsWith("[")
-  ) {
-    return null;
-  }
   try {
     const response = await fetch(clientId, {
       headers: { Accept: "application/json" },
       redirect: "error",
       signal: AbortSignal.timeout(5000),
     });
-    if (!response.ok) return null;
-    const text = await response.text();
-    if (text.length > 10_000) return null;
+    if (!response.ok || !response.body) return null;
+    const text = await readCapped(response.body, MAX_METADATA_BYTES);
+    if (text === null) return null;
     const body = JSON.parse(text);
     if (!isObject(body) || body.client_id !== clientId) return null;
     const parsed = parseClientMetadata(body);
@@ -1093,6 +1122,30 @@ async function fetchClientMetadata(clientId: string) {
   } catch {
     return null;
   }
+}
+
+/** Reads a stream as text, giving up once it exceeds `maxBytes`. */
+async function readCapped(stream: ReadableStream<Uint8Array>, maxBytes: number) {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 export type { JSONSchema };

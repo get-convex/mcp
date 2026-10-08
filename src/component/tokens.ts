@@ -16,9 +16,12 @@ export const tokenInfo = v.object({
   stale: v.boolean(),
 });
 
-/** Resolves a bearer credential (by hash) to the user it acts for. */
+/**
+ * Resolves a bearer credential (by hash) to the user it acts for. `now` is
+ * an argument, not `Date.now()`, so a cached result can't outlive expiry.
+ */
 export const verify = query({
-  args: { hash: v.string() },
+  args: { hash: v.string(), now: v.number() },
   returns: v.union(v.null(), tokenInfo),
   handler: async (ctx, args) => {
     const token = await ctx.db
@@ -26,7 +29,7 @@ export const verify = query({
       .withIndex("hash", (q) => q.eq("hash", args.hash))
       .unique();
     if (!token || token.kind === "refresh") return null;
-    if (token.expiresAt !== undefined && token.expiresAt <= Date.now()) {
+    if (token.expiresAt !== undefined && token.expiresAt <= args.now) {
       return null;
     }
     const grant = await ctx.db.get("grants", token.grantId);
@@ -40,7 +43,7 @@ export const verify = query({
       clientId: grant.clientId,
       stale:
         grant.lastUsedAt === undefined ||
-        grant.lastUsedAt < Date.now() - LAST_USED_RESOLUTION_MS,
+        grant.lastUsedAt < args.now - LAST_USED_RESOLUTION_MS,
     };
   },
 });
@@ -87,13 +90,18 @@ export async function issueTokens(
   });
 }
 
+/**
+ * Deleting the grant is what revokes access: `verify` and `refresh` both
+ * require it. Tokens are deleted here in a bounded batch; any left over
+ * expire and are removed by the cleanup cron.
+ */
 export async function deleteGrant(ctx: MutationCtx, grant: Doc<"grants">) {
+  await ctx.db.delete("grants", grant._id);
   const tokens = await ctx.db
     .query("tokens")
     .withIndex("grantId", (q) => q.eq("grantId", grant._id))
-    .take(1000);
+    .take(2000);
   for (const token of tokens) {
     await ctx.db.delete("tokens", token._id);
   }
-  await ctx.db.delete("grants", grant._id);
 }
