@@ -24,7 +24,9 @@ whether agents are actually good at using the app: **the tool surface**.
    tool name · one-line description · args · read/write · scope ·
    annotations, plus what you deliberately left out and why. Get the user's
    OK; adjust.
-3. **Install and wire** (see "Wiring" below): `npm i @convex-dev/mcp`,
+3. **Install and wire** (see "Wiring" below): add `@convex-dev/mcp` with the
+   app's own package manager (`npm i` / `pnpm add` / `yarn add` / `bun add` —
+   match the lockfile),
    `app.use(mcp)`, `convex/mcp.ts`, `http.ts`, a `/connect` consent page,
    and a "Connected agents" section in settings.
 4. **Implement tools on internal functions that take `userId`.** Reuse the
@@ -45,6 +47,7 @@ app.use(mcp); // the app itself must not set an httpPrefix
 ```ts
 // convex/mcp.ts
 import { McpServer, tool } from "@convex-dev/mcp";
+// Convex Auth 0.0.x: "@convex-dev/auth/server". Convex Auth v2: "@convex-dev/auth/core".
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
@@ -53,7 +56,9 @@ import type { Id } from "./_generated/dataModel";
 export const mcp = new McpServer(components.mcp, {
   name: "acme", title: "Acme", version: "1.0.0",
   instructions: "Short guidance on how the tools fit together.",
-  consentUrl: `${process.env.SITE_URL}/connect`,
+  // The frontend page users approve on. Set it explicitly — don't derive it
+  // from an existing SITE_URL-style var without checking what that var is.
+  consentUrl: process.env.MCP_CONSENT_URL!,
   scopes: { "docs:read": "Read your documents", "docs:write": "Create and edit your documents" },
   tools: {
     search_documents: tool({
@@ -73,6 +78,8 @@ export const mcp = new McpServer(components.mcp, {
 
 export const { getAuthRequest, authorize, listConnections, revokeConnection, createApiKey } =
   mcp.api({ getUserId: getAuthUserId });
+// For the CLI and tests; internal, so only deploy credentials can call it.
+export const { createApiKeyForUser } = mcp.internalApi();
 ```
 
 ```ts
@@ -85,14 +92,24 @@ mcp.registerRoutes(http); // /mcp, /mcp/oauth/*, /.well-known/*
   `identity.subject` alone with multiple issuers, never an email.
 - Tool handlers run in an HTTP action: there is **no `ctx.auth` identity**.
   Identity arrives only as `user.userId`. Call internal functions with it.
-- `SITE_URL` (env) is the app's frontend origin. Behind a custom API domain,
-  pass `siteUrl` to `McpServer`.
+- Two different URLs — don't mix them up:
+  - `consentUrl`: the **frontend** page (`https://app.example.com/connect`).
+    Set it explicitly (e.g. an `MCP_CONSENT_URL` env var). Apps often have a
+    `SITE_URL` that points somewhere else on purpose (an old domain kept for
+    passkeys, the Convex Auth site URL, …) — check before reusing one.
+  - `siteUrl`: the public origin of the **Convex HTTP actions**, i.e. the MCP
+    server URL users paste. Defaults to `CONVEX_SITE_URL`; set it when you
+    serve HTTP actions from a custom domain.
 - Consent page at `/connect?request=…`: if signed out, sign in and come back
   to the same URL; show `getAuthRequest` (client name, scopes, redirect
   host); Allow/Deny call `authorize({ requestId, approve })` and
-  `window.location.assign(redirectUrl)`. Serve it with
-  `Content-Security-Policy: frame-ancestors 'none'` so it can't be
-  clickjacked inside another site's iframe.
+  `window.location.assign(redirectUrl)`.
+- Don't let the consent page be framed (clickjacking). Best: send
+  `Content-Security-Policy: frame-ancestors 'none'` from your host
+  (`vercel.json` headers, Netlify/Cloudflare `_headers`, Next `headers()`).
+  On hosts that can't set per-route headers (Convex static hosting, static
+  exports), **also** refuse to render the approval UI when framed:
+  `if (window.top !== window.self) return <p>Open this page directly.</p>;`
 - Add `returns` to tools that return objects: results are checked against it,
   so it also stops fields you didn't list from leaking to the agent.
 - Settings: show the MCP URL, `listConnections` with "Disconnect"
@@ -105,10 +122,16 @@ consent page, connections UI, `example/e2e.mjs` end-to-end script).
 ## Verify
 
 ```sh
-KEY=...   # from createApiKey in the app UI or `npx convex run`-driven test
-curl -s $SITE/mcp -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# Mint a key for a test user without going through the UI or --identity:
+KEY=$(npx convex run mcp:createApiKeyForUser '{"userId":"<id getUserId returns>"}' | jq -r .apiKey)
+curl -s $CONVEX_SITE_URL/mcp -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -H 'MCP-Protocol-Version: 2025-06-18' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
+
+The `userId` is whatever `getUserId` returns — for Convex Auth, a `users`
+table ID (`npx convex data users --limit 1`). Prefer this over
+`npx convex run … --identity`, whose identity must reproduce your auth
+provider's exact `issuer`/`subject`/`tokenIdentifier`.
 
 Call each tool once with realistic arguments, and once with a bad ID (expect
 an `isError` result, not a crash).

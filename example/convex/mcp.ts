@@ -11,8 +11,10 @@ export const mcp = new McpServer(components.mcp, {
   title: "Todos",
   version: "0.1.0",
   instructions: "Manage the signed-in user's todo list.",
-  // Where /authorize sends the user to sign in and approve the agent.
-  consentUrl: `${process.env.SITE_URL ?? "http://localhost:5173"}/connect`,
+  // Your frontend's consent page, where /authorize sends the user to sign in
+  // and approve the agent. Set it explicitly: it's the page users see, which
+  // isn't necessarily any other *_SITE_URL you already have.
+  consentUrl: process.env.MCP_CONSENT_URL ?? "http://localhost:5173/connect",
   scopes: {
     "todos:read": "See your todos",
     "todos:write": "Add, complete and delete your todos",
@@ -81,3 +83,7 @@ export const {
   revokeConnection,
   createApiKey,
 } = mcp.api({ getUserId: getAuthUserId });
+
+// Operator/testing helpers, callable only with deploy credentials:
+//   npx convex run mcp:createApiKeyForUser '{"userId":"<users id>"}'
+export const { createApiKeyForUser } = mcp.internalApi();

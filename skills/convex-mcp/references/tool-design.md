@@ -88,7 +88,42 @@ exceptions are hidden from the agent and logged.
   If included: destructive annotation, explicit arguments, and a write scope
   users can withhold.
 
-## 8. Proposal format
+## 8. Shared items, teams and roles
+
+If anything can be shared (docs shared with a link or with people, team
+projects, roles like viewer/editor), "owned by `userId`" is the wrong check —
+it both breaks legitimate access and tempts people to skip checks. Use one
+access function for **both** the UI path and the MCP path:
+
+```ts
+// convex/access.ts — single source of truth
+export async function requireAccess(
+  ctx: QueryCtx, userId: Id<"users">, bookId: Id<"books">,
+  need: "view" | "edit" | "admin",
+) {
+  const book = await ctx.db.get("books", bookId);
+  if (!book) throw new ConvexError(`No book with id ${bookId}`);
+  const role = book.ownerId === userId ? "admin"
+    : (await ctx.db.query("bookMembers")
+        .withIndex("book_user", (q) => q.eq("bookId", bookId).eq("userId", userId))
+        .unique())?.role;
+  if (!role || rank(role) < rank(need)) throw new ConvexError(`No book with id ${bookId}`);
+  return { book, role };
+}
+```
+
+- UI functions: `requireAccess(ctx, await getAuthUserId(ctx), id, "edit")`.
+  Internal functions for MCP: `requireAccess(ctx, args.userId, id, "edit")`.
+  Same function, so the two paths can't drift.
+- Map tools to the access level they need (`view` for reads, `edit` for
+  writes, `admin` for sharing/deleting) and consider matching scopes.
+- List/search tools must cover what the user can reach (owned + shared), via
+  the membership index, not just `ownerId`.
+- Public link-sharing tokens are a UI concept; don't accept them as tool
+  arguments.
+- "Not found" and "no access" return the same error so IDs can't be probed.
+
+## 9. Proposal format
 
 Present this to the user before implementing:
 

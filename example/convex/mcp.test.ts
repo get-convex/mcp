@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { initConvexTest } from "./setup.test.js";
 
 beforeAll(() => {
@@ -63,6 +63,18 @@ describe("MCP server in an app", () => {
     expect(connection).toMatchObject({ kind: "apiKey", name: "test" });
     await asUser.mutation(api.mcp.revokeConnection, { id: connection.id });
     expect((await call("ping")).status).toBe(401);
+  });
+
+  test("operators can mint a key for a user from the CLI", async () => {
+    const t = initConvexTest();
+    const userId = await t.run((ctx) => ctx.db.insert("users", {}));
+    const { apiKey } = await t.action(internal.mcp.createApiKeyForUser, { userId });
+    const res = await t.fetch("/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "MCP-Protocol-Version": "2025-06-18" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_todos", arguments: {} } }),
+    });
+    expect((await res.json()).result.structuredContent).toEqual({ todos: [] });
   });
 
   test("serves discovery metadata", async () => {

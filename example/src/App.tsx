@@ -42,6 +42,21 @@ function SignIn({ reason }: { reason?: string }) {
  * user here as /connect?request=…; approving sends them back to the agent.
  */
 function Consent() {
+  // Never render approval UI inside another site's frame (clickjacking).
+  // Prefer the `frame-ancestors 'none'` header where your host can set it;
+  // this check also covers static hosts that can't.
+  if (window.top !== window.self) {
+    return (
+      <section className="card">
+        <h1>Open this page directly</h1>
+        <p>For your security, approving an agent can't be done inside another site.</p>
+      </section>
+    );
+  }
+  return <ConsentPrompt />;
+}
+
+function ConsentPrompt() {
   const requestId = new URLSearchParams(window.location.search).get("request") ?? "";
   const request = useQuery(api.mcp.getAuthRequest, { requestId });
   const authorize = useAction(api.mcp.authorize);

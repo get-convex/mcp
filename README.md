@@ -60,7 +60,8 @@ paste:
 Add an MCP server to this Convex app so our users can use it from their AI
 agents (Claude, ChatGPT, Cursor, Claude Code).
 
-1. Run `npm install @convex-dev/mcp@alpha`.
+1. Add `@convex-dev/mcp@alpha` with this project's package manager (npm,
+   pnpm, yarn or bun — match the lockfile).
 2. Read node_modules/@convex-dev/mcp/skills/convex-mcp/SKILL.md and its
    references, and follow it: study the app, then propose the MCP tools
    (names, descriptions, args, scopes, annotations) as a table and wait for
@@ -83,7 +84,7 @@ The agent will stop after step 2 to show you the proposed tools.
 ## Installation
 
 ```sh
-npm install @convex-dev/mcp@alpha
+npm install @convex-dev/mcp@alpha   # or pnpm add / yarn add / bun add
 ```
 
 ```ts
@@ -111,6 +112,7 @@ and check ownership there just like your UI code does.
 ```ts
 // convex/mcp.ts
 import { McpServer, tool } from "@convex-dev/mcp";
+// Convex Auth 0.0.x; with Convex Auth v2 import from "@convex-dev/auth/core".
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
@@ -121,7 +123,8 @@ export const mcp = new McpServer(components.mcp, {
   title: "Todos",
   version: "1.0.0",
   instructions: "Manage the user's todo list.",
-  consentUrl: `${process.env.SITE_URL}/connect`,
+  // Your frontend's consent page. Set it explicitly.
+  consentUrl: process.env.MCP_CONSENT_URL!,
   scopes: {
     "todos:read": "See your todos",
     "todos:write": "Add and complete your todos",
@@ -155,6 +158,14 @@ export const {
 } = mcp.api({ getUserId: getAuthUserId });
 ```
 
+For the CLI and tests, also export the internal helpers. They can only be
+called with deploy credentials:
+
+```ts
+export const { createApiKeyForUser } = mcp.internalApi();
+// npx convex run mcp:createApiKeyForUser '{"userId":"<users id>"}'
+```
+
 `getUserId` decides who a connection acts for. Return a stable ID that can't
 collide across identity providers, such as your users table ID or
 `identity.tokenIdentifier`.
@@ -171,8 +182,13 @@ mcp.registerRoutes(http);
 export default http;
 ```
 
-Your MCP server URL is `https://<deployment>.convex.site/mcp`. If you serve
-HTTP actions from a custom domain, pass `siteUrl`.
+Your MCP server URL is `https://<deployment>.convex.site/mcp`. Two URLs are
+easy to confuse:
+
+- `consentUrl` is the page on your **frontend** where users approve agents.
+- `siteUrl` is the public origin of your **Convex HTTP actions**, which is
+  the server URL users paste. It defaults to `CONVEX_SITE_URL`. Pass it if
+  you use a custom domain for HTTP actions.
 
 Every authorization creates its own connection, so a user can connect the
 same agent on several machines.
@@ -181,8 +197,10 @@ same agent on several machines.
 
 When an agent connects, the user is sent to `consentUrl?request=<id>`. On
 that page, make sure the user is signed in (coming back to the same URL
-afterwards), show who's asking, and let them decide. Serve it with
-`Content-Security-Policy: frame-ancestors 'none'` so it can't be framed.
+afterwards), show who's asking, and let them decide. Don't let it be
+framed: send `Content-Security-Policy: frame-ancestors 'none'` where your
+host can. On static hosts that can't set headers, refuse to render the
+approval UI when `window.top !== window.self`. The example does both.
 
 ```tsx
 const requestId = new URLSearchParams(location.search).get("request")!;

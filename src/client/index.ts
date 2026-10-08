@@ -1,6 +1,7 @@
 import {
   actionGeneric,
   httpActionGeneric,
+  internalActionGeneric,
   mutationGeneric,
   queryGeneric,
 } from "convex/server";
@@ -1025,25 +1026,60 @@ export class McpServer {
        */
       createApiKey: actionGeneric({
         args: { name: v.string(), scopes: v.optional(v.array(v.string())) },
-        handler: async (ctx, args): Promise<{ id: string; apiKey: string; url: string }> => {
-          const userId = await requireUser(ctx);
-          const name = args.name.trim().slice(0, 100) || "API key";
-          const scopes = args.scopes ?? this.scopeNames;
-          if (scopes.some((s) => !this.scopeNames.includes(s))) {
-            throw new ConvexError("Unknown scope");
-          }
-          const apiKey = randomToken(TOKEN_PREFIX.apiKey);
-          const id = await ctx.runMutation(component.grants.createApiKey, {
-            userId,
-            name,
-            scopes,
-            resource: this.resource,
-            hash: await sha256Hex(apiKey),
-          });
-          return { id, apiKey, url: this.resource };
-        },
+        handler: async (ctx, args): Promise<{ id: string; apiKey: string; url: string }> =>
+          this.mintApiKey(ctx, await requireUser(ctx), args),
       }),
     };
+  }
+
+  /**
+   * Internal functions for operators and testing. They take a `userId`
+   * directly, so they are `internalAction`s: only callable from your own
+   * backend code or with deploy credentials (`npx convex run`, dashboard).
+   *
+   * ```ts
+   * export const { createApiKeyForUser } = mcp.internalApi();
+   * ```
+   * ```sh
+   * npx convex run mcp:createApiKeyForUser '{"userId":"<id getUserId returns>"}'
+   * ```
+   */
+  internalApi() {
+    return {
+      createApiKeyForUser: internalActionGeneric({
+        args: {
+          userId: v.string(),
+          name: v.optional(v.string()),
+          scopes: v.optional(v.array(v.string())),
+        },
+        handler: async (ctx, args): Promise<{ id: string; apiKey: string; url: string }> =>
+          this.mintApiKey(ctx, args.userId, {
+            name: args.name ?? "CLI key",
+            scopes: args.scopes,
+          }),
+      }),
+    };
+  }
+
+  private async mintApiKey(
+    ctx: { runMutation: ToolCtx["runMutation"] },
+    userId: string,
+    args: { name: string; scopes?: string[] },
+  ) {
+    const name = args.name.trim().slice(0, 100) || "API key";
+    const scopes = args.scopes ?? this.scopeNames;
+    if (scopes.some((s) => !this.scopeNames.includes(s))) {
+      throw new ConvexError("Unknown scope");
+    }
+    const apiKey = randomToken(TOKEN_PREFIX.apiKey);
+    const id = await ctx.runMutation(this.component.grants.createApiKey, {
+      userId,
+      name,
+      scopes,
+      resource: this.resource,
+      hash: await sha256Hex(apiKey),
+    });
+    return { id, apiKey, url: this.resource };
   }
 }
 

@@ -48,7 +48,10 @@ configuration. Report suspected component bugs upstream, with a repro.
 Use a dev or local deployment you're authorized to modify, never production
 or real users' data. Create **two users, A and B**, each with their own data,
 and MCP credentials for each: a full key and a read-only key (to prove a
-read-only connection is possible).
+read-only connection is possible). If the app exports
+`mcp.internalApi()`, mint keys with
+`npx convex run mcp:createApiKeyForUser '{"userId":"…","scopes":[…]}'`;
+otherwise use the script below (adapt sign-in to the app's auth).
 
 ```js
 // node prove.mjs — adjust sign-in to the app's auth (this is Convex Auth Anonymous)
@@ -82,7 +85,8 @@ async function mcp(key, method, params = {}) {
   would — with no auth and as B — using the raw HTTP API, which shows the
   real error:
   `curl -s $CONVEX_URL/api/mutation -H 'Content-Type: application/json' -d '{"path":"todos:addForUser","args":{"userId":"<A>","text":"x"},"format":"json"}'`.
-  "Could not find public function" means internal (good). `npx convex run`
+  Convex returns HTTP 200 with `{"status":"error",…}` for failures, so read
+  the body: "Could not find public function" means internal (good). `npx convex run`
   is **not** a proof of exposure: it uses deploy credentials and can call
   internal functions; use it with `--identity` only to test auth behavior.
 - **Result size:** insert large content, list it, report the response bytes.

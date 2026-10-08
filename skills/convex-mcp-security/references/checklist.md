@@ -25,6 +25,10 @@ payments.
 - [ ] Multi-tenant apps: the org/team a tool acts in is either fixed per
       connection or checked for membership on every call, the same way the UI
       checks it.
+- [ ] Apps with sharing/roles: internal functions call the **same** access
+      helper as the UI (e.g. `requireAccess(ctx, userId, id, "edit")`), with
+      the right level per tool (view/edit/admin). Prove with a third user who
+      has *view* access: write tools must refuse them, read tools must work.
 
 ## 2. Functions the tools call (Critical if wrong)
 
@@ -116,10 +120,14 @@ payments.
       never HTML; don't load remote `logo_uri` images unless the client is
       trusted. Warn when the redirect is `localhost`/loopback (any local
       program can claim it).
-- [ ] Served with `Content-Security-Policy: frame-ancestors 'none'` (or
-      `X-Frame-Options: DENY`). Check the **production hosting config**
-      (`vercel.json`, `_headers`, Netlify/Cloudflare rules, Convex static
-      hosting); a dev-server check only proves dev.
+- [ ] Can't be framed: `Content-Security-Policy: frame-ancestors 'none'`
+      (or `X-Frame-Options: DENY`) from the **production hosting config**
+      (`vercel.json`, `_headers`, Next `headers()`), and/or — on hosts that
+      can't set headers (Convex static hosting, static exports) — the page
+      refuses to render approval UI when `window.top !== window.self`. A
+      dev-server check only proves dev.
+- [ ] `consentUrl` points at the real frontend (not a legacy or
+      auth-provider `SITE_URL`) and `siteUrl` is the URL users connect to.
 - [ ] The page navigates to the `redirectUrl` returned by `authorize`, not
       a URL built from query parameters.
 

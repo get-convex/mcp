@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.2
+
+- `mcp.internalApi()` with `createApiKeyForUser`: mint API keys from the CLI
+  or tests (`npx convex run`), callable only with deploy credentials.
+- Docs and skills: Convex Auth v2 import path (`@convex-dev/auth/core`),
+  explicit `consentUrl` vs `siteUrl`, a framing fallback for static hosts,
+  package-manager-neutral install, and a shared-items/roles access pattern.
+
 ## 0.1.0-alpha.1
 
 - First release published from CI (npm trusted publishing).
