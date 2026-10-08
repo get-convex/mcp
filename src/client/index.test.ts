@@ -307,3 +307,26 @@ describe("callToolResult", () => {
     expect(JSON.stringify(r.body)).not.toContain("secret");
   });
 });
+
+describe("lint", () => {
+  test("flags missing scopes and annotations", () => {
+    const bare = new McpServer(components.mcp, {
+      name: "x",
+      version: "1",
+      consentUrl: "https://app.example/connect",
+      siteUrl: "https://site.example",
+      tools: { t: tool({ description: "t", handler: async () => null }) },
+    });
+    const findings = bare.lint();
+    expect(findings.some((f) => f.includes("No `scopes`"))).toBe(true);
+    expect(findings.some((f) => f.includes('"t" has no annotations'))).toBe(true);
+  });
+
+  test("vMcpUser validates the user passed to internal functions", async () => {
+    const { vMcpUser } = await import("./index.js");
+    const { checkValue } = await import("./schema.js");
+    const validator = vMcpUser();
+    expect(checkValue(validator, { userId: "u", scopes: [], connectionId: "c" }).ok).toBe(true);
+    expect(checkValue(validator, { userId: "u" }).ok).toBe(false);
+  });
+});

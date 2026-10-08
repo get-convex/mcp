@@ -9,6 +9,13 @@
 URL, creating public/shareable links, inviting people, changing sharing,
 payments.
 
+## 0. Quick automated pass
+
+- [ ] `mcp.lint()` returns `[]` (missing scopes/annotations, scope mixups).
+- [ ] Internal functions take `vMcpUser(...)` (or at least `userId`) and
+      the access helper honors `user.scopes` so read-only connections can't
+      write even where the user could.
+
 ## 1. Identity (Critical if wrong)
 
 - [ ] Handlers take identity **only** from `user.userId` (third handler

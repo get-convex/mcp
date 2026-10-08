@@ -81,6 +81,16 @@ Don't deploy to production or touch real user data.
 
 The agent will stop after step 2 to show you the proposed tools.
 
+Already have an MCP server built with this component? Paste this to audit it:
+
+```text
+Read node_modules/@convex-dev/mcp/skills/convex-mcp-security/SKILL.md and
+audit this app's MCP server as it describes, against our dev deployment with
+two test users (mint keys with createApiKeyForUser if we export it). Prove
+each finding, fix it, re-prove it, and show me the report. Don't touch
+production or real user data.
+```
+
 ## Installation
 
 ```sh
@@ -166,6 +176,15 @@ export const { createApiKeyForUser } = mcp.internalApi();
 // npx convex run mcp:createApiKeyForUser '{"userId":"<users id>"}'
 ```
 
+To type `user.userId` as your own ID type, use `createTool<Id<"users">>()` in
+place of `tool`. Then annotate the server's type, which breaks a TypeScript
+inference cycle when the same file exports functions:
+
+```ts
+const tool = createTool<Id<"users">>();
+export const mcp: McpServer<Id<"users">> = new McpServer(components.mcp, { ... });
+```
+
 `getUserId` decides who a connection acts for. Return a stable ID that can't
 collide across identity providers, such as your users table ID or
 `identity.tokenIdentifier`.
@@ -248,6 +267,68 @@ Give a tool `scope: "x"` (it must be a key of `scopes`). A connection only
 sees and can call tools in its granted scopes. A call outside those scopes
 gets HTTP 403 `insufficient_scope`. When a client requests no scope, the
 connection gets all of them.
+
+## Authorization
+
+The component authenticates the connection and gives your tool the verified
+`user` (`userId`, plus the connection's `scopes`, `clientId` and
+`connectionId`). **Deciding what that user may do is your app's job.** Do it
+the same way your UI does, inside the transaction that reads or writes:
+
+1. **Use one access helper for the UI and for MCP.** Put the check in a function
+   like `requireList(ctx, actor, listId, "view" | "edit" | "manage")`. Call
+   it from your UI mutations *and* from the internal functions your tools
+   call, so the two paths can't drift apart. Return the same error for "not
+   found" and "not allowed".
+2. **Pass the whole MCP user, not just the ID.** Internal functions take
+   `{ user: vMcpUser(v.id("users")) }`. Your helper can then let a
+   connection's scopes **narrow** what the user may do. For example, a
+   `todos:read` connection acts as a viewer even on the user's own list.
+3. **Plug in whatever already decides access in your app:**
+   - **Your own tables**, such as owners, members and roles. The example
+     ([`example/convex/access.ts`](./example/convex/access.ts)) shares lists
+     with viewer and editor roles.
+   - **A sharing or authorization component.** Call its transactional check,
+     such as `requireAccess(ctx, { resourceRef, actor }, "edit")`, from your
+     helper.
+   - **An external engine** (OpenFGA, Cerbos, WorkOS FGA). These can't be
+     called from a query or mutation, which can't make network requests.
+     Copy the relationships you need into indexed Convex tables, check those
+     inside the transaction, and keep them in sync from actions or webhooks.
+     Calling the engine from an action and then writing in a separate
+     mutation leaves a gap between the check and the write. Only do that if
+     a short delay in revocation is acceptable.
+4. **Lists and searches** should query what the user can reach (owned plus
+   shared, through an index), not fetch everything and then filter.
+
+## Security checklist
+
+Before you ship, make sure that:
+
+- [ ] **Tools act only as `user.userId`.** No tool argument decides whose
+      data is touched.
+- [ ] **The functions tools call are `internal*`.** A public function that
+      trusts a `userId` argument can be called by anyone.
+- [ ] **Every ID from the model is checked for access** with the same
+      helper your UI uses, including IDs of child objects.
+- [ ] **Every tool that returns an object declares `returns`.** It's
+      enforced, so it is also the allowlist of fields that reach the agent.
+- [ ] **Reads and writes have separate scopes,** and every tool is
+      annotated (`readOnlyHint`, `destructiveHint`, `openWorldHint`).
+- [ ] **Tools that send data out are behind a server-side policy,** such as
+      a recipient allowlist or confirmation in your app, if your server also
+      returns text written by other people. Annotations don't stop prompt
+      injection.
+- [ ] **The consent page can't be framed** (with a `frame-ancestors`
+      header, or the in-page check on static hosts) and labels client
+      names as unverified.
+- [ ] **`expect(mcp.lint()).toEqual([])` passes in a test.** `lint()`
+      flags missing scopes, missing annotations and inconsistent scopes. It
+      also logs once, on the first MCP request, unless you set
+      `warnings: false`.
+
+Then run the security audit skill (prompt above), which proves each item
+live with two users.
 
 ## Designing your tools
 

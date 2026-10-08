@@ -17,6 +17,7 @@ import type {
   Infer,
   ObjectType,
   PropertyValidators,
+  VString,
 } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 import { randomToken, sha256Base64Url, sha256Hex, TOKEN_PREFIX } from "../shared.js";
@@ -35,13 +36,40 @@ export type ToolCtx = GenericActionCtx<GenericDataModel>;
  * Who a tool call acts for. `userId` comes from a verified credential: it is
  * the value your `getUserId` returned when the user connected the agent.
  */
-export type McpUser = {
-  userId: string;
+export type McpUser<UserId extends string = string> = {
+  userId: UserId;
+  /**
+   * Scopes this connection was granted. They can only narrow what the user
+   * can do: pass the whole `McpUser` to your authorization code so it can
+   * treat e.g. a read-only connection as a viewer.
+   */
   scopes: string[];
   /** The OAuth client ID, or undefined for personal API keys. */
   clientId?: string;
   connectionId: string;
 };
+
+/**
+ * Validator for passing an `McpUser` into your internal functions, so your
+ * authorization code sees the connection's scopes, not just the user ID:
+ *
+ * ```ts
+ * export const addForUser = internalMutation({
+ *   args: { user: vMcpUser(v.id("users")), text: v.string() },
+ *   handler: async (ctx, { user, text }) => { ... },
+ * });
+ * ```
+ */
+export function vMcpUser<UserId extends GenericValidator = VString<string>>(
+  userId?: UserId,
+) {
+  return v.object({
+    userId: (userId ?? v.string()) as UserId,
+    scopes: v.array(v.string()),
+    clientId: v.optional(v.string()),
+    connectionId: v.string(),
+  });
+}
 
 /** https://modelcontextprotocol.io/specification/2025-11-25/server/tools */
 export type ToolAnnotations = {
@@ -83,6 +111,7 @@ export function callToolResult(result: CallToolResult) {
 export type ToolDefinition<
   Args extends PropertyValidators = PropertyValidators,
   Returns extends GenericValidator | undefined = GenericValidator | undefined,
+  UserId extends string = string,
 > = {
   /** Human-friendly display name. */
   title?: string;
@@ -102,7 +131,7 @@ export type ToolDefinition<
   handler: (
     ctx: ToolCtx,
     args: ObjectType<Args>,
-    user: McpUser,
+    user: McpUser<UserId>,
   ) => Promise<
     | (Returns extends GenericValidator ? Infer<Returns> : unknown)
     | ReturnType<typeof callToolResult>
@@ -117,17 +146,35 @@ export function tool<
   return definition as ToolDefinition<any, any>;
 }
 
+/**
+ * Returns a `tool` helper whose handlers see `user.userId` typed as your user
+ * ID type, so no casts are needed:
+ *
+ * ```ts
+ * const tool = createTool<Id<"users">>();
+ * ```
+ */
+export function createTool<UserId extends string>() {
+  return <
+    Args extends PropertyValidators = Record<string, never>,
+    Returns extends GenericValidator | undefined = undefined,
+  >(
+    definition: ToolDefinition<Args, Returns, UserId>,
+  ): ToolDefinition<any, any, UserId> =>
+    definition as ToolDefinition<any, any, UserId>;
+}
+
 // ---------------------------------------------------------------------------
 // Server
 
-export type McpServerOptions = {
+export type McpServerOptions<UserId extends string = string> = {
   /** Server name reported to clients in `serverInfo`. */
   name: string;
   version: string;
   title?: string;
   /** Guidance for the model on how to use this server's tools. */
   instructions?: string;
-  tools: Record<string, ToolDefinition<any, any>>;
+  tools: Record<string, ToolDefinition<any, any, UserId>>;
   /**
    * Your app's consent page. Users are sent to `${consentUrl}?request=<id>`;
    * the page signs them in, shows `getAuthRequest`, and calls `authorize`.
@@ -157,6 +204,11 @@ export type McpServerOptions = {
   clientMetadataDocumentHosts?: string[];
   accessTokenTtlMs?: number;
   refreshTokenTtlMs?: number;
+  /**
+   * Log `lint()` findings (risky tool setups) once per process on the first
+   * MCP request. Default true.
+   */
+  warnings?: boolean;
 };
 
 /**
@@ -185,19 +237,20 @@ const DEFAULT_REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 
 type CompiledTool = {
   name: string;
-  definition: ToolDefinition<any, any>;
+  definition: ToolDefinition<any, any, any>;
   args: GenericValidator;
   returns?: GenericValidator;
   listing: Record<string, unknown>;
 };
 
-export class McpServer {
+export class McpServer<UserId extends string = string> {
   private readonly tools: Map<string, CompiledTool>;
   readonly path: string;
+  private warned = false;
 
   constructor(
     public component: ComponentApi,
-    public options: McpServerOptions,
+    public options: McpServerOptions<UserId>,
   ) {
     this.path = normalizePath(options.path ?? "/mcp");
     this.tools = new Map();
@@ -375,7 +428,10 @@ export class McpServer {
   }
 
   /** Verifies the bearer credential on an MCP request. */
-  async authenticate(ctx: ToolCtx, request: Request): Promise<McpUser | null> {
+  async authenticate(
+    ctx: ToolCtx,
+    request: Request,
+  ): Promise<McpUser<UserId> | null> {
     const header = request.headers.get("Authorization");
     const match = header?.match(/^Bearer\s+(\S+)$/i);
     if (!match) return null;
@@ -391,14 +447,52 @@ export class McpServer {
       });
     }
     return {
-      userId: info.userId,
+      userId: info.userId as UserId,
       scopes: info.scopes,
       clientId: info.clientId,
       connectionId: info.grantId,
     };
   }
 
+  /**
+   * Risky setups worth fixing: write tools without a scope, tools without
+   * annotations, no scopes at all. Assert `expect(mcp.lint()).toEqual([])`
+   * in a test to keep it that way.
+   */
+  lint(): string[] {
+    const findings: string[] = [];
+    const scopes = this.scopeNames;
+    if (scopes.length === 0) {
+      findings.push(
+        "No `scopes`: users can't connect a read-only agent. Add e.g. `<area>:read` and `<area>:write`.",
+      );
+    }
+    for (const t of this.tools.values()) {
+      const d = t.definition;
+      if (!d.annotations) {
+        findings.push(
+          `Tool "${t.name}" has no annotations; clients assume it is destructive and open-world. Set readOnlyHint/destructiveHint/openWorldHint.`,
+        );
+      }
+      if (scopes.length && !d.scope) {
+        findings.push(
+          `Tool "${t.name}" has no \`scope\`, so every connection (even read-only ones) can call it.`,
+        );
+      }
+      if (d.annotations?.readOnlyHint === true && d.scope && /write|admin|manage/i.test(d.scope)) {
+        findings.push(
+          `Tool "${t.name}" is read-only but requires the write-like scope "${d.scope}"; read-only connections can't use it.`,
+        );
+      }
+    }
+    return findings;
+  }
+
   async handleMcp(ctx: ToolCtx, request: Request): Promise<Response> {
+    if (!this.warned && this.options.warnings !== false) {
+      this.warned = true;
+      for (const finding of this.lint()) console.warn(`[@convex-dev/mcp] ${finding}`);
+    }
     const origin = request.headers.get("Origin");
     if (origin && !this.options.allowedOrigins?.includes(origin)) {
       return json(rpcError(null, -32000, "Origin not allowed"), 403);
@@ -445,7 +539,7 @@ export class McpServer {
     ctx: ToolCtx,
     request: Request,
     body: unknown,
-    user: McpUser,
+    user: McpUser<UserId>,
   ): Promise<Response> {
     if (!isObject(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
       return json(rpcError(null, -32600, "Invalid Request"), 400);
@@ -537,7 +631,7 @@ export class McpServer {
     ctx: ToolCtx,
     body: unknown,
     headerVersion: string | null,
-    user: McpUser,
+    user: McpUser<UserId>,
   ): Promise<Response> {
     const batch = Array.isArray(body);
     if (batch && headerVersion && headerVersion !== "2025-03-26") {
@@ -563,7 +657,7 @@ export class McpServer {
   private async handleLegacyMessage(
     ctx: ToolCtx,
     message: unknown,
-    user: McpUser,
+    user: McpUser<UserId>,
   ): Promise<unknown | Response | undefined> {
     if (!isObject(message) || message.jsonrpc !== "2.0") {
       return rpcError(null, -32600, "Invalid Request");
@@ -630,7 +724,7 @@ export class McpServer {
   }
 
   /** Tools visible to this connection, in definition order (deterministic). */
-  private listTools(user: McpUser) {
+  private listTools(user: McpUser<UserId>) {
     return [...this.tools.values()]
       .filter((t) => this.allowed(t, user))
       .map((t) => t.listing);
@@ -640,7 +734,7 @@ export class McpServer {
     return typeof name === "string" ? this.tools.get(name) : undefined;
   }
 
-  private allowed(t: CompiledTool, user: McpUser) {
+  private allowed(t: CompiledTool, user: McpUser<UserId>) {
     return !t.definition.scope || user.scopes.includes(t.definition.scope);
   }
 
@@ -654,7 +748,7 @@ export class McpServer {
     ctx: ToolCtx,
     t: CompiledTool,
     rawArgs: unknown,
-    user: McpUser,
+    user: McpUser<UserId>,
   ): Promise<CallToolResult> {
     // Validation failures are tool errors so the model can fix its call.
     const checked = checkValue(t.args, rawArgs);
@@ -931,7 +1025,7 @@ export class McpServer {
    * identity providers (e.g. `tokenIdentifier`, or your users table ID).
    */
   api(opts: {
-    getUserId: (ctx: { auth: Auth }) => Promise<string | null>;
+    getUserId: (ctx: { auth: Auth }) => Promise<UserId | null>;
   }) {
     const component = this.component;
     const requireUser = async (ctx: { auth: Auth }) => {

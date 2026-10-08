@@ -141,6 +141,7 @@ ok("DCR registers a public client and rejects bad redirect URIs");
 const convex = new ConvexHttpClient(convexUrl);
 const signIn = await convex.action(api.auth.signIn, { provider: "anonymous" });
 convex.setAuth(signIn.tokens.token);
+const listId = await convex.mutation(api.lists.ensureDefault, {});
 const { code, verifier, details } = await authorizeFlow(convex, clientId);
 assert.deepEqual(
   details.scopes.map((s) => s.name),
@@ -201,25 +202,25 @@ ok("code exchanged once for tokens; replay rejected");
 
   const list = await rpc(accessToken, "tools/list", {});
   const names = list.body.result.tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ["add_todo", "delete_todo", "list_todos", "set_todo_done"]);
+  assert.deepEqual(names, ["add_todo", "delete_todo", "list_lists", "list_todos", "set_todo_done"]);
   const addTool = list.body.result.tools.find((t) => t.name === "add_todo");
   assert.deepEqual(addTool.inputSchema, {
     type: "object",
-    properties: { text: { type: "string" } },
-    required: ["text"],
+    properties: { listId: { type: "string" }, text: { type: "string" } },
+    required: ["listId", "text"],
     additionalProperties: false,
   });
   ok("tools/list returns JSON Schemas generated from Convex validators");
 
   const added = await rpc(accessToken, "tools/call", {
     name: "add_todo",
-    arguments: { text: "Buy milk" },
+    arguments: { listId, text: "Buy milk" },
   });
   assert.equal(added.body.result.structuredContent.text, "Buy milk");
-  const listed = await rpc(accessToken, "tools/call", { name: "list_todos", arguments: {} });
+  const listed = await rpc(accessToken, "tools/call", { name: "list_todos", arguments: { listId } });
   assert.equal(listed.body.result.structuredContent.todos.length, 1);
   // The app's own UI sees the same data.
-  const viaApp = await convex.query(api.todos.list, {});
+  const viaApp = await convex.query(api.todos.list, { listId });
   assert.equal(viaApp.length, 1);
   const done = await rpc(accessToken, "tools/call", {
     name: "set_todo_done",
@@ -230,7 +231,7 @@ ok("code exchanged once for tokens; replay rejected");
 
   const invalid = await rpc(accessToken, "tools/call", {
     name: "add_todo",
-    arguments: { text: 42 },
+    arguments: { listId, text: 42 },
   });
   assert.equal(invalid.body.result.isError, true);
   assert.match(invalid.body.result.content[0].text, /arguments\.text: expected string/);
@@ -279,9 +280,9 @@ ok("code exchanged once for tokens; replay rejected");
   assert.equal(discover.body.result.resultType, "complete");
   assert.ok(discover.body.result.supportedVersions.includes("2026-07-28"));
   const list = await modern("tools/list");
-  assert.equal(list.body.result.tools.length, 4);
+  assert.equal(list.body.result.tools.length, 5);
   assert.equal(list.body.result.cacheScope, "private");
-  const called = await modern("tools/call", { name: "list_todos", arguments: {} });
+  const called = await modern("tools/call", { name: "list_todos", arguments: { listId } });
   assert.equal(called.body.result.resultType, "complete");
   assert.ok(Array.isArray(called.body.result.structuredContent.todos));
   ok("2026-07-28: server/discover, tools/list, tools/call without initialize");
@@ -332,7 +333,7 @@ ok("code exchanged once for tokens; replay rejected");
   });
   const roToken = ro.body.access_token;
   const tools = (await rpc(roToken, "tools/list", {})).body.result.tools;
-  assert.deepEqual(tools.map((t) => t.name), ["list_todos"]);
+  assert.deepEqual(tools.map((t) => t.name), ["list_lists", "list_todos"]);
   const denied = await rpc(roToken, "tools/call", {
     name: "add_todo",
     arguments: { text: "x" },
@@ -345,7 +346,7 @@ ok("code exchanged once for tokens; replay rejected");
 // 10. Connections page + API keys.
 {
   const { apiKey } = await convex.action(api.mcp.createApiKey, { name: "CLI" });
-  const viaKey = await rpc(apiKey, "tools/call", { name: "list_todos", arguments: {} });
+  const viaKey = await rpc(apiKey, "tools/call", { name: "list_todos", arguments: { listId } });
   assert.equal(viaKey.body.result.structuredContent.todos.length, 1);
   const connections = await convex.query(api.mcp.listConnections, {});
   assert.deepEqual(connections.map((c) => c.kind).sort(), ["apiKey", "oauth"]);
@@ -369,12 +370,24 @@ ok("code exchanged once for tokens; replay rejected");
     client_id: clientId,
     code_verifier: ver,
   });
-  const list = await rpc(t.body.access_token, "tools/call", {
-    name: "list_todos",
-    arguments: {},
-  });
-  assert.equal(list.body.result.structuredContent.todos.length, 0);
+  const otherToken = t.body.access_token;
+  const theirs = await rpc(otherToken, "tools/call", { name: "list_todos", arguments: { listId } });
+  assert.equal(theirs.body.result.isError, true);
+  const lists = await rpc(otherToken, "tools/call", { name: "list_lists", arguments: {} });
+  assert.equal(lists.body.result.structuredContent.lists.length, 0);
   ok("each user's agent only sees that user's data");
+
+  // 12. Sharing: once A shares as viewer, B's agent can read but not write.
+  const [mine] = await convex.query(api.lists.mine, {});
+  await other.mutation(api.lists.join, { code: mine.viewerCode });
+  const shared = await rpc(otherToken, "tools/call", { name: "list_todos", arguments: { listId } });
+  assert.equal(shared.body.result.structuredContent.todos.length, 1);
+  const write = await rpc(otherToken, "tools/call", {
+    name: "add_todo",
+    arguments: { listId, text: "nope" },
+  });
+  assert.equal(write.body.result.isError, true);
+  ok("shared as viewer: the other user's agent can read, not write");
 }
 
 console.log("\nAll end-to-end checks passed.");

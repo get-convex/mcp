@@ -8,9 +8,12 @@
  * @module
  */
 
+import type * as access from "../access.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
+import type * as lists from "../lists.js";
 import type * as mcp from "../mcp.js";
+import type * as mcpFunctions from "../mcpFunctions.js";
 import type * as todos from "../todos.js";
 
 import type {
@@ -20,9 +23,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access: typeof access;
   auth: typeof auth;
   http: typeof http;
+  lists: typeof lists;
   mcp: typeof mcp;
+  mcpFunctions: typeof mcpFunctions;
   todos: typeof todos;
 }>;
 

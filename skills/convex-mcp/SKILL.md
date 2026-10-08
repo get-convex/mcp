@@ -29,10 +29,15 @@ whether agents are actually good at using the app: **the tool surface**.
    match the lockfile),
    `app.use(mcp)`, `convex/mcp.ts`, `http.ts`, a `/connect` consent page,
    and a "Connected agents" section in settings.
-4. **Implement tools on internal functions that take `userId`.** Reuse the
-   app's existing helpers and ownership checks; never trust IDs from the
-   model without checking they belong to `userId`.
-5. **Verify.** `npx convex dev --once` + typecheck, then exercise the real
+4. **Implement tools on internal functions that take the MCP user**
+   (`args: { user: vMcpUser(v.id("users")), … }`). Authorize with the
+   **same access helper the UI uses**, inside the transaction, and let the
+   connection's scopes narrow it (read-only scope ⇒ viewer). Never trust IDs
+   from the model without that check. See
+   [references/tool-design.md](references/tool-design.md) §8 and the
+   package's `example/convex/access.ts`.
+5. **Verify.** Add `expect(mcp.lint()).toEqual([])` to a test.
+   `npx convex dev --once` + typecheck, then exercise the real
    endpoint: create an API key through the app, `tools/list`, and call every
    tool once (see "Verify"). Fix descriptions the model would misread.
 
@@ -46,14 +51,17 @@ app.use(mcp); // the app itself must not set an httpPrefix
 
 ```ts
 // convex/mcp.ts
-import { McpServer, tool } from "@convex-dev/mcp";
+import { createTool, McpServer, vMcpUser } from "@convex-dev/mcp";
 // Convex Auth 0.0.x: "@convex-dev/auth/server". Convex Auth v2: "@convex-dev/auth/core".
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 
-export const mcp = new McpServer(components.mcp, {
+const tool = createTool<Id<"users">>(); // user.userId typed, no casts
+
+// Annotating the type avoids a TS inference cycle with this file's exports.
+export const mcp: McpServer<Id<"users">> = new McpServer(components.mcp, {
   name: "acme", title: "Acme", version: "1.0.0",
   instructions: "Short guidance on how the tools fit together.",
   // The frontend page users approve on. Set it explicitly — don't derive it
@@ -68,9 +76,8 @@ export const mcp = new McpServer(components.mcp, {
       annotations: { readOnlyHint: true },
       scope: "docs:read",
       handler: async (ctx, args, user) => ({
-        documents: await ctx.runQuery(internal.documents.searchForUser, {
-          userId: user.userId as Id<"users">, ...args,
-        }),
+        // Pass the whole user: your access helper sees the connection's scopes.
+        documents: await ctx.runQuery(internal.documents.searchForMcp, { user, ...args }),
       }),
     }),
   },

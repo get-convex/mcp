@@ -8,7 +8,7 @@ import {
   useMutation,
   useQuery,
 } from "convex/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../convex/_generated/api";
 
 const MCP_URL = `${import.meta.env.VITE_CONVEX_SITE_URL}/mcp`;
@@ -119,35 +119,109 @@ function Home() {
         <h1>Todos</h1>
         <button onClick={() => void signOut()}>Sign out</button>
       </header>
-      <Todos />
+      <Lists />
       <Agents />
     </>
   );
 }
 
-function Todos() {
-  const todos = useQuery(api.todos.list);
+function Lists() {
+  const lists = useQuery(api.lists.mine);
+  const ensureDefault = useMutation(api.lists.ensureDefault);
+  const join = useMutation(api.lists.join);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (lists && lists.length === 0) void ensureDefault();
+  }, [lists, ensureDefault]);
+
+  const current = lists?.find((l) => l.id === selected) ?? lists?.[0];
+  return (
+    <>
+      <section className="card">
+        <div className="row">
+          {lists?.map((l) => (
+            <button
+              key={l.id}
+              className={l.id === current?.id ? "primary" : ""}
+              onClick={() => setSelected(l.id)}
+            >
+              {l.name} <span className="muted">· {l.role}</span>
+            </button>
+          ))}
+        </div>
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError(null);
+            join({ code: code.trim() })
+              .then((id) => {
+                setSelected(id);
+                setCode("");
+              })
+              .catch((err: unknown) =>
+                setError(err instanceof Error ? err.message : String(err)),
+              );
+          }}
+        >
+          <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="Join a list with a share code" />
+          <button type="submit">Join</button>
+        </form>
+        {error && <p className="error">{error}</p>}
+      </section>
+      {current && <Todos list={current} />}
+    </>
+  );
+}
+
+type ListInfo = {
+  id: string;
+  name: string;
+  role: "owner" | "editor" | "viewer";
+  editorCode?: string;
+  viewerCode?: string;
+};
+
+function Todos({ list }: { list: ListInfo }) {
+  const todos = useQuery(api.todos.list, { listId: list.id });
   const add = useMutation(api.todos.add);
   const toggle = useMutation(api.todos.toggle);
   const [text, setText] = useState("");
+  const canEdit = list.role !== "viewer";
   return (
     <section className="card">
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (text.trim()) void add({ text: text.trim() });
-          setText("");
-        }}
-      >
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a todo" />
-        <button type="submit">Add</button>
-      </form>
+      <h2>{list.name}</h2>
+      {list.role === "owner" && (
+        <p className="muted">
+          Share: editors use <code>{list.editorCode}</code>, viewers use <code>{list.viewerCode}</code>
+        </p>
+      )}
+      {canEdit && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (text.trim()) void add({ listId: list.id, text: text.trim() });
+            setText("");
+          }}
+        >
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a todo" />
+          <button type="submit">Add</button>
+        </form>
+      )}
       <ul className="todos">
         {todos?.map((t) => (
           <li key={t._id}>
             <label>
-              <input type="checkbox" checked={t.done} onChange={() => void toggle({ id: t._id })} />
+              <input
+                type="checkbox"
+                checked={t.done}
+                disabled={!canEdit}
+                onChange={() => void toggle({ id: t._id })}
+              />
               <span className={t.done ? "done" : ""}>{t.text}</span>
             </label>
           </li>

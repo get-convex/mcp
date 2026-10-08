@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.0-alpha.3
+
+- Typed user IDs: `createTool<Id<"users">>()` and `McpServer<UserId>`, so
+  handlers need no casts.
+- `vMcpUser()` validator to pass the whole MCP user (incl. connection scopes)
+  into internal functions, so app authorization can narrow per connection.
+- `mcp.lint()` flags risky setups (no scopes, missing annotations, scope
+  mixups) and logs once on the first request (`warnings: false` to silence).
+- README: Authorization recipes (own helper, sharing components, external
+  engines) and a Security checklist; audit-my-server prompt.
+- Example is now a sharing app (lists with viewer/editor members) with one
+  access helper used by both the UI and the MCP tools.
+
 ## 0.1.0-alpha.2
 
 - `mcp.internalApi()` with `createApiKeyForUser`: mint API keys from the CLI
