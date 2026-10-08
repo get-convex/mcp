@@ -202,6 +202,18 @@ export type McpServerOptions<UserId extends string = string> = {
    * registration works for all clients either way.
    */
   clientMetadataDocumentHosts?: string[];
+  /**
+   * Let agents that can only make HTTP requests sign in with the device flow
+   * (RFC 8628): they get a link for the user to approve, then a short-lived
+   * access token (no refresh token). Default true.
+   */
+  deviceFlow?: boolean;
+  /**
+   * List tool names and descriptions on the public `GET /mcp` guide. Off by
+   * default: `tools/list` (which respects each connection's scopes) only
+   * works after sign-in.
+   */
+  describeTools?: boolean;
   accessTokenTtlMs?: number;
   refreshTokenTtlMs?: number;
   /**
@@ -232,6 +244,13 @@ const TOOLS_LIST_TTL_MS = 5 * 60_000;
 
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 60_000;
+/** Pre-registered public client for agents using the device flow. */
+export const DEVICE_CLIENT_ID = "mcp-agent";
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const DEVICE_TTL_MS = 10 * 60_000;
+const DEVICE_INTERVAL_MS = 5_000;
+// No vowels or look-alikes: avoids words and misreads.
+const USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ";
 const DEFAULT_ACCESS_TTL_MS = 60 * 60_000;
 const DEFAULT_REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 
@@ -334,9 +353,7 @@ export class McpServer<UserId extends string = string> {
     const p = this.path;
 
     route(p, "POST", (ctx, req) => this.handleMcp(ctx, req));
-    route(p, "GET", async (_ctx, req) =>
-      this.mcpCors(req, new Response(null, { status: 405, headers: { Allow: "POST" } })),
-    );
+    route(p, "GET", async (_ctx, req) => this.mcpCors(req, this.handleGet(req)));
     route(p, "DELETE", async (_ctx, req) =>
       this.mcpCors(req, new Response(null, { status: 405, headers: { Allow: "POST" } })),
     );
@@ -360,6 +377,10 @@ export class McpServer<UserId extends string = string> {
     route(`${p}/oauth/register`, "OPTIONS", preflight);
     route(`${p}/oauth/authorize`, "GET", (ctx, req) => this.handleAuthorize(ctx, req));
     route(`${p}/oauth/token`, "POST", (ctx, req) => this.handleToken(ctx, req));
+    if (this.deviceFlow) {
+      route(`${p}/oauth/device`, "POST", (ctx, req) => this.handleDevice(ctx, req));
+      route(`${p}/oauth/device`, "OPTIONS", preflight);
+    }
     route(`${p}/oauth/token`, "OPTIONS", preflight);
     route(`${p}/oauth/revoke`, "POST", (ctx, req) => this.handleRevoke(ctx, req));
     route(`${p}/oauth/revoke`, "OPTIONS", preflight);
@@ -385,7 +406,14 @@ export class McpServer<UserId extends string = string> {
       revocation_endpoint: `${base}/revoke`,
       response_types_supported: ["code"],
       response_modes_supported: ["query"],
-      grant_types_supported: ["authorization_code", "refresh_token"],
+      grant_types_supported: [
+        "authorization_code",
+        "refresh_token",
+        ...(this.deviceFlow ? [DEVICE_GRANT] : []),
+      ],
+      ...(this.deviceFlow
+        ? { device_authorization_endpoint: `${base}/device` }
+        : {}),
       token_endpoint_auth_methods_supported: ["none"],
       revocation_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
@@ -964,6 +992,29 @@ export class McpServer<UserId extends string = string> {
         refreshHash: await sha256Hex(refreshToken),
         ...ttls,
       });
+    } else if (grantType === DEVICE_GRANT && this.deviceFlow) {
+      const deviceCode = form.get("device_code");
+      if (!deviceCode) {
+        return oauthError("invalid_request", "device_code required", 400);
+      }
+      const polled = await ctx.runMutation(this.component.oauth.pollDevice, {
+        deviceCodeHash: await sha256Hex(deviceCode),
+        clientId,
+        accessHash: await sha256Hex(accessToken),
+        accessTtlMs: ttls.accessTtlMs,
+      });
+      if (!polled.ok) return oauthError(polled.error, undefined, 400);
+      // No refresh token: device-flow tokens may live in chat transcripts.
+      return json(
+        {
+          access_token: accessToken,
+          token_type: "Bearer",
+          expires_in: Math.floor(ttls.accessTtlMs / 1000),
+          ...(polled.scopes.length ? { scope: polled.scopes.join(" ") } : {}),
+        },
+        200,
+        { ...PUBLIC_CORS, "Cache-Control": "no-store", Pragma: "no-cache" },
+      );
     } else if (grantType === "refresh_token") {
       const presented = form.get("refresh_token");
       if (!presented) {
@@ -991,6 +1042,181 @@ export class McpServer<UserId extends string = string> {
       200,
       { ...PUBLIC_CORS, "Cache-Control": "no-store", Pragma: "no-cache" },
     );
+  }
+
+  private get deviceFlow() {
+    return this.options.deviceFlow !== false;
+  }
+
+  /** RFC 8628 §3.1–3.2 device authorization request. */
+  private async handleDevice(ctx: ToolCtx, request: Request) {
+    const form = await readForm(request);
+    if (!form) return oauthError("invalid_request", "Expected form body", 400);
+    const clientId = form.get("client_id");
+    if (!clientId) {
+      return oauthError(
+        "invalid_client",
+        `client_id required (agents can use the public client "${DEVICE_CLIENT_ID}")`,
+        401,
+      );
+    }
+    let clientName: string | undefined;
+    if (clientId === DEVICE_CLIENT_ID) {
+      clientName = sanitizeName(form.get("client_name")) ?? "An agent";
+    } else if (!(await this.resolveClient(ctx, clientId))) {
+      return oauthError("invalid_client", "Unknown client", 401);
+    }
+    const resource = form.get("resource");
+    if (resource && stripSlash(resource) !== this.resource) {
+      return oauthError("invalid_target", `resource must be ${this.resource}`, 400);
+    }
+    const scopes = this.parseScopes(form.get("scope"));
+    if (!scopes) return oauthError("invalid_scope", "Unknown scope requested", 400);
+
+    const deviceCode = randomToken("mcp_dc_");
+    const requestId = randomToken("mcp_req_", 16);
+    let userCode = "";
+    for (let attempt = 0; ; attempt++) {
+      userCode = generateUserCode();
+      try {
+        const created = await ctx.runMutation(this.component.oauth.createDeviceRequest, {
+          requestId,
+          clientId,
+          clientName,
+          deviceCodeHash: await sha256Hex(deviceCode),
+          userCode,
+          scopes,
+          resource: this.resource,
+          ttlMs: DEVICE_TTL_MS,
+          intervalMs: DEVICE_INTERVAL_MS,
+        });
+        if (!created.ok) return tooManyRequests(created.retryAfterMs);
+        break;
+      } catch (error) {
+        if (attempt >= 2) throw error; // user code collisions are vanishingly rare
+      }
+    }
+    return json(
+      {
+        device_code: deviceCode,
+        user_code: userCode,
+        verification_uri: this.options.consentUrl,
+        verification_uri_complete: withParams(this.options.consentUrl, { request: requestId }),
+        expires_in: DEVICE_TTL_MS / 1000,
+        interval: DEVICE_INTERVAL_MS / 1000,
+      },
+      200,
+      { ...PUBLIC_CORS, "Cache-Control": "no-store" },
+    );
+  }
+
+  /**
+   * `GET /mcp`. MCP clients only POST (legacy ones may GET for a server-sent
+   * event stream, which we don't offer: 405). Everyone else — a browser, or
+   * an agent that fetched the URL — gets a guide to connecting.
+   */
+  private handleGet(request: Request): Response {
+    const accept = request.headers.get("Accept") ?? "";
+    if (accept.includes("text/event-stream")) {
+      return new Response(null, { status: 405, headers: { Allow: "POST" } });
+    }
+    const markdown = accept.includes("text/markdown");
+    return new Response(this.guide(), {
+      status: 200,
+      headers: {
+        "Content-Type": `${markdown ? "text/markdown" : "text/plain"}; charset=utf-8`,
+        Vary: "Accept",
+        "Cache-Control": "public, max-age=300",
+      },
+    });
+  }
+
+  /** Agent-readable instructions for using this server. */
+  guide(): string {
+    const name = this.options.title ?? this.options.name;
+    const base = this.oauthBase;
+    const url = this.resource;
+    const scopes = Object.entries(this.options.scopes ?? {});
+    const lines: string[] = [
+      `# ${name} — MCP server`,
+      "",
+      ...(this.options.instructions ? [this.options.instructions, ""] : []),
+      `This is a Model Context Protocol (MCP) server: ${url}`,
+      "",
+      "## Connect an MCP client",
+      "",
+      "Add the URL above as a remote (Streamable HTTP) MCP server. Sign-in is OAuth and happens in the browser. For example:",
+      "",
+      `    claude mcp add --transport http ${this.options.name} ${url}`,
+      "",
+      "In claude.ai or ChatGPT: Settings → Connectors → add a custom connector with this URL.",
+    ];
+    if (this.deviceFlow) {
+      lines.push(
+        "",
+        "## Agents with only an HTTP tool: use it directly",
+        "",
+        "You can call this server with plain HTTP requests. The user must approve you first.",
+        "",
+        "### 1. Request access",
+        "",
+        `    curl -s -X POST ${base}/device -d client_id=${DEVICE_CLIENT_ID} -d "client_name=<your name>"` +
+          (scopes.length ? ` -d "scope=${scopes.map(([s]) => s).join(" ")}"` : ""),
+        "",
+        "`client_name` is shown to the user on the approval screen: use your product's name (e.g. Claude).",
+        "",
+        "The JSON response has `verification_uri_complete`, `user_code`, `device_code`, `interval` and `expires_in`.",
+        "",
+        "### 2. Ask the user to approve",
+        "",
+        `Show the user \`verification_uri_complete\` as a clickable link, and the \`user_code\`. Say something like: "Open this link to let me use ${name}. Check that it shows the code ABCD-EFGH." Repeating the \`user_code\` is fine; never share the \`device_code\`.`,
+        "",
+        `The link opens ${name}'s own website, which may be on a different host than this API. That's expected.`,
+        "",
+        "### 3. Get a token",
+        "",
+        "Poll every `interval` seconds until approved:",
+        "",
+        `    curl -s -X POST ${base}/token -d grant_type=${DEVICE_GRANT} -d client_id=${DEVICE_CLIENT_ID} -d device_code=<device_code>`,
+        "",
+        "- `authorization_pending`: the user hasn't approved yet; keep polling.",
+        "- `slow_down`: add 5 seconds to your interval.",
+        "- `access_denied` or `expired_token`: stop; start again if the user wants. The request expires after `expires_in` seconds (about 10 minutes).",
+        "- Success: `access_token`, valid for `expires_in` seconds. There is no refresh token; request access again when it expires. Keep the token out of messages to the user.",
+        "",
+        "### 4. Call tools",
+        "",
+        "Every request is a JSON-RPC POST. The headers and `_meta` shown are required (MCP 2026-07-28). Start with `tools/list` to see the tools, their descriptions and argument schemas:",
+        "",
+        `    curl -s ${url} \\`,
+        `      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\`,
+        `      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/list" \\`,
+        `      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'`,
+        "",
+        "Then call a tool (`Mcp-Name` must equal `params.name`):",
+        "",
+        `    curl -s ${url} \\`,
+        `      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \\`,
+        `      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/call" -H "Mcp-Name: <tool>" \\`,
+        `      -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"<tool>","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'`,
+        "",
+        "Results are in `result.structuredContent` (and as text in `result.content`). `result.isError: true` means the call failed with a message you can act on. HTTP 401 means the token expired: request access again.",
+      );
+    }
+    if (scopes.length) {
+      lines.push("", "## Scopes", "", ...scopes.map(([s, d]) => `- \`${s}\`: ${d}`));
+    }
+    if (this.options.describeTools) {
+      lines.push(
+        "",
+        "## Tools",
+        "",
+        ...[...this.tools.values()].map(
+          (t) => `- \`${t.name}\`: ${t.definition.description.replace(/\s+/g, " ")}`,
+        ),
+      );
+    }
+    return lines.join("\n") + "\n";
   }
 
   private async handleRevoke(ctx: ToolCtx, request: Request) {
@@ -1043,11 +1269,19 @@ export class McpServer<UserId extends string = string> {
           const scopes = this.options.scopes ?? {};
           return {
             serverName: this.options.title ?? this.options.name,
+            /**
+             * "device": an agent started this and is waiting; show `userCode`
+             * and require the user to confirm it matches what the agent
+             * shows. "redirect": the user is sent back to `redirectUri`.
+             */
+            kind: request.kind,
             clientId: request.clientId,
+            /** Self-reported by the client: label it as unverified. */
             clientName: request.clientName,
-            clientUri: request.clientUri,
-            logoUri: request.logoUri,
-            redirectUri: request.redirectUri,
+            clientUri: request.kind === "redirect" ? request.clientUri : undefined,
+            logoUri: request.kind === "redirect" ? request.logoUri : undefined,
+            redirectUri: request.kind === "redirect" ? request.redirectUri : undefined,
+            userCode: request.kind === "device" ? request.userCode : undefined,
             status: request.status,
             scopes: request.scopes.map((name) => ({
               name,
@@ -1057,12 +1291,32 @@ export class McpServer<UserId extends string = string> {
         },
       }),
       /**
-       * Approves or denies a request as the signed-in user. Returns the URL
-       * to send the browser to (the agent's redirect URI).
+       * Finds a device request by the code the user typed (for a consent
+       * page opened without `?request=`). Rate limited per user.
+       */
+      findAuthRequest: mutationGeneric({
+        args: { userCode: v.string() },
+        handler: async (ctx, args): Promise<string | null> => {
+          const userId = await requireUser(ctx);
+          const userCode = normalizeUserCode(args.userCode);
+          if (!userCode) return null;
+          const found = await ctx.runMutation(component.oauth.findByUserCode, {
+            userCode,
+            limitKey: userId,
+          });
+          if (!found.ok) throw new ConvexError("Too many attempts. Try again in a few minutes.");
+          return found.requestId;
+        },
+      }),
+      /**
+       * Approves or denies a request as the signed-in user. For redirect
+       * requests, returns the URL to send the browser to (back to the
+       * agent). For device requests, `redirectUrl` is null: tell the user to
+       * return to their agent.
        */
       authorize: actionGeneric({
         args: { requestId: v.string(), approve: v.boolean() },
-        handler: async (ctx, args): Promise<{ redirectUrl: string }> => {
+        handler: async (ctx, args): Promise<{ redirectUrl: string | null }> => {
           const userId = await requireUser(ctx);
           const code = args.approve ? randomToken(TOKEN_PREFIX.code) : undefined;
           const decided = await ctx.runMutation(component.oauth.decideAuthRequest, {
@@ -1075,6 +1329,7 @@ export class McpServer<UserId extends string = string> {
           if (!decided) {
             throw new ConvexError("This request has expired. Start again from your agent.");
           }
+          if (decided.kind === "device") return { redirectUrl: null };
           return {
             redirectUrl: withParams(decided.redirectUri, {
               ...(code
@@ -1230,6 +1485,25 @@ function decodeHeaderValue(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function generateUserCode() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  const chars = [...bytes].map((b) => USER_CODE_ALPHABET[b % USER_CODE_ALPHABET.length]);
+  return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
+}
+
+/** Uppercases and re-hyphenates a user code as typed by a person. */
+export function normalizeUserCode(input: string) {
+  const letters = input.toUpperCase().replace(/[^A-Z]/g, "");
+  return letters.length === 8 ? `${letters.slice(0, 4)}-${letters.slice(4)}` : null;
+}
+
+/** Self-reported client names: printable, short, single line. */
+function sanitizeName(name: string | null) {
+  const cleaned = name?.replace(/[^\p{L}\p{N} ._()-]/gu, "").trim().slice(0, 60);
+  return cleaned || undefined;
 }
 
 function errorResult(text: string): CallToolResult {

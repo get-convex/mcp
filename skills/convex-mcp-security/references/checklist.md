@@ -133,6 +133,11 @@ payments.
       can't set headers (Convex static hosting, static exports) — the page
       refuses to render approval UI when `window.top !== window.self`. A
       dev-server check only proves dev.
+- [ ] Device-flow requests (`kind: "device"`): the page shows `userCode`
+      and Allow stays disabled until the user confirms it matches their
+      agent; it warns "if someone sent you this link, deny it". (Remote
+      phishing: an attacker starts a device request and sends the victim
+      the link.)
 - [ ] `consentUrl` points at the real frontend (not a legacy or
       auth-provider `SITE_URL`) and `siteUrl` is the URL users connect to.
 - [ ] The page navigates to the `redirectUrl` returned by `authorize`, not

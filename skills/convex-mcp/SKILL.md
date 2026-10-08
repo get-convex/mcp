@@ -110,7 +110,11 @@ mcp.registerRoutes(http); // /mcp, /mcp/oauth/*, /.well-known/*
 - Consent page at `/connect?request=…`: if signed out, sign in and come back
   to the same URL; show `getAuthRequest` (client name, scopes, redirect
   host); Allow/Deny call `authorize({ requestId, approve })` and
-  `window.location.assign(redirectUrl)`.
+  `window.location.assign(redirectUrl)` (when it's `null`, the request came
+  from an agent using the device flow: show "you can return to your agent").
+  For `kind: "device"` requests also show `userCode` and require a
+  "this matches my agent" checkbox before Allow; offer a code-entry box
+  (`findAuthRequest`) when the page has no `?request=`.
 - Don't let the consent page be framed (clickjacking). Best: send
   `Content-Security-Policy: frame-ancestors 'none'` from your host
   (`vercel.json` headers, Netlify/Cloudflare `_headers`, Next `headers()`).

@@ -34,6 +34,11 @@ export const mcp = new McpServer(components.mcp, {
   replay detection, and audience-bound tokens. It works with claude.ai
   connectors and any spec-compliant client. Client ID metadata documents are
   available as an opt-in for hosts you allowlist.
+- **Paste the URL into any agent chat.** An agent that can only make HTTP
+  requests fetches `/mcp` and gets instructions. It then shows the user a
+  clickable approval link, gets a short-lived token, and starts calling
+  tools. No MCP client setup is needed. This uses the OAuth device flow,
+  RFC 8628.
 - **Your auth, your consent page.** Users sign in with whatever your app
   already uses (Convex Auth, Clerk, WorkOS, …), then approve the agent.
 - **Connections UI.** Users can list connected agents, disconnect them, and
@@ -233,6 +238,29 @@ const decide = async (approve: boolean) => {
 };
 ```
 
+#### Agents that started from a pasted URL (device flow)
+
+An agent with only an HTTP tool can fetch `GET /mcp`, which returns
+step-by-step instructions, and sign in with the device flow, using the
+public client ID `mcp-agent`. The user gets a link to your consent page,
+`consentUrl?request=…`. For these requests, `getAuthRequest` returns
+`kind: "device"` and a `userCode`. Your consent page should:
+
+- show the `userCode` and **require** the user to confirm it matches what
+  their agent shows (a checkbox), before enabling Allow. This is the main
+  defense against someone sending a victim their own approval link;
+- label `clientName` as unverified, since the agent reports it about itself;
+- after `authorize`, which returns `redirectUrl: null` for device requests,
+  tell the user to go back to their agent;
+- if opened without `?request=`, offer a box to type the code, which calls
+  `findAuthRequest({ userCode })`. That lookup is rate-limited per user.
+
+Device-flow tokens are short-lived access tokens with **no refresh token**,
+since they may end up in chat transcripts. The tool list isn't shown on the
+public guide unless you set `describeTools: true`. Set `deviceFlow: false`
+to turn the feature off. The example consent page
+([`example/src/App.tsx`](./example/src/App.tsx)) implements all of this.
+
 ### 4. Show connected agents
 
 Settings can use `listConnections`, `revokeConnection({ id })` and
@@ -322,6 +350,9 @@ Before you ship, make sure that:
 - [ ] **The consent page can't be framed** (with a `frame-ancestors`
       header, or the in-page check on static hosts) and labels client
       names as unverified.
+- [ ] **For device-flow requests, the consent page shows the user code**
+      and requires the user to confirm it matches, before Allow is
+      enabled.
 - [ ] **`expect(mcp.lint()).toEqual([])` passes in a test.** `lint()`
       flags missing scopes, missing annotations and inconsistent scopes. It
       also logs once, on the first MCP request, unless you set
@@ -364,6 +395,8 @@ const res = await t.fetch("/mcp", { method: "POST", headers: { Authorization: `B
 - **Short tool calls.** Each tool call is a single HTTP action, so it has
   Convex's action time and memory limits. Keep calls short and return small
   results.
+- **Device flow and the pasted-URL guide** are on by default. Turn them off
+  with `deviceFlow: false`.
 - **Not yet supported:** server-to-client streaming (SSE progress,
   sampling, elicitation), resources and prompts, and confidential clients.
 - **Rate limiting.** Client registration and `/authorize` are rate limited

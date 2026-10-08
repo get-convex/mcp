@@ -27,7 +27,7 @@ async function approvedCode(t: ReturnType<typeof initConvexTest>) {
     codeHash: "code1",
     codeTtlMs: 60_000,
   });
-  expect(decided).toEqual({ redirectUri: "https://agent.example/cb", state: "s" });
+  expect(decided).toEqual({ kind: "redirect", redirectUri: "https://agent.example/cb", state: "s" });
 }
 
 const exchange = {
@@ -270,5 +270,101 @@ describe("cleanup", () => {
     const tokens = await t.run((ctx) => ctx.db.query("tokens").collect());
     expect(tokens.map((x) => x.hash)).toEqual(["key1"]);
     vi.useRealTimers();
+  });
+});
+
+describe("device flow", () => {
+  async function start(t: ReturnType<typeof initConvexTest>) {
+    await t.mutation(api.oauth.createDeviceRequest, {
+      requestId: "dreq",
+      clientId: "mcp-agent",
+      clientName: "Agent",
+      deviceCodeHash: "dc1",
+      userCode: "BCDF-GHJK",
+      scopes: ["read"],
+      resource: "https://app.example/mcp",
+      ttlMs: 600_000,
+      intervalMs: 5_000,
+    });
+  }
+  const poll = (t: ReturnType<typeof initConvexTest>, accessHash = "dat") =>
+    t.mutation(api.oauth.pollDevice, {
+      deviceCodeHash: "dc1",
+      clientId: "mcp-agent",
+      accessHash,
+      accessTtlMs: 60_000,
+    });
+
+  test("pending → slow_down (interval grows) → approved → single-use access token", async () => {
+    const t = initConvexTest();
+    await start(t);
+    expect(await poll(t)).toEqual({ ok: false, error: "authorization_pending" });
+    expect(await poll(t)).toEqual({ ok: false, error: "slow_down" });
+    const row = await t.run((ctx) => ctx.db.query("authRequests").first());
+    expect(row && "pollIntervalMs" in row && row.pollIntervalMs).toBe(10_000);
+
+    expect(
+      await t.mutation(api.oauth.decideAuthRequest, {
+        requestId: "dreq",
+        userId: "user1",
+        approved: true,
+        codeTtlMs: 60_000,
+      }),
+    ).toEqual({ kind: "device" });
+    expect(await poll(t)).toEqual({ ok: true, scopes: ["read"] });
+    expect(await t.query(api.tokens.verify, { hash: "dat", now: Date.now() })).toMatchObject({
+      userId: "user1",
+      scopes: ["read"],
+    });
+    // No refresh token is issued for device grants.
+    const tokens = await t.run((ctx) => ctx.db.query("tokens").collect());
+    expect(tokens.map((x) => x.kind)).toEqual(["access"]);
+    expect(await poll(t, "again")).toEqual({ ok: false, error: "invalid_grant" });
+  });
+
+  test("denied → access_denied; wrong client → invalid_grant", async () => {
+    const t = initConvexTest();
+    await start(t);
+    expect(
+      await t.mutation(api.oauth.pollDevice, {
+        deviceCodeHash: "dc1",
+        clientId: "someone-else",
+        accessHash: "x",
+        accessTtlMs: 60_000,
+      }),
+    ).toEqual({ ok: false, error: "invalid_grant" });
+    await t.mutation(api.oauth.decideAuthRequest, {
+      requestId: "dreq",
+      userId: "user1",
+      approved: false,
+      codeTtlMs: 60_000,
+    });
+    expect(await poll(t)).toEqual({ ok: false, error: "access_denied" });
+  });
+
+  test("device requests can't be redeemed as authorization codes", async () => {
+    const t = initConvexTest();
+    await start(t);
+    await t.mutation(api.oauth.decideAuthRequest, {
+      requestId: "dreq",
+      userId: "user1",
+      approved: true,
+      codeTtlMs: 60_000,
+    });
+    expect(
+      await t.mutation(api.oauth.exchangeCode, { ...exchange, codeHash: "dc1" }),
+    ).toEqual({ ok: false, error: "invalid_grant" });
+  });
+
+  test("typed user codes are rate limited per user", async () => {
+    const t = initConvexTest();
+    await start(t);
+    const find = () =>
+      t.mutation(api.oauth.findByUserCode, { userCode: "ZZZZ-ZZZZ", limitKey: "user1" });
+    for (let i = 0; i < 5; i++) expect(await find()).toEqual({ ok: true, requestId: null });
+    expect((await find()).ok).toBe(false);
+    expect(
+      await t.mutation(api.oauth.findByUserCode, { userCode: "BCDF-GHJK", limitKey: "user2" }),
+    ).toEqual({ ok: true, requestId: "dreq" });
   });
 });

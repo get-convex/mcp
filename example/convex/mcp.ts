@@ -97,6 +97,7 @@ export const mcp: McpServer<Id<"users">> = new McpServer(components.mcp, {
 // With Convex Auth, the users table ID is a stable, issuer-scoped user ID.
 export const {
   getAuthRequest,
+  findAuthRequest,
   authorize,
   listConnections,
   revokeConnection,

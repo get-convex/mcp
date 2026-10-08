@@ -390,4 +390,99 @@ ok("code exchanged once for tokens; replay rejected");
   ok("shared as viewer: the other user's agent can read, not write");
 }
 
+// 13. GET /mcp explains itself to agents; SSE GETs still get 405.
+{
+  const page = await fetch(mcpUrl, { headers: { Accept: "text/html" } });
+  assert.equal(page.status, 200);
+  const text = await page.text();
+  assert.match(text, /oauth\/device/);
+  assert.match(text, /client_id=mcp-agent/);
+  const sse = await fetch(mcpUrl, { headers: { Accept: "text/event-stream" } });
+  assert.equal(sse.status, 405);
+  ok("GET /mcp returns an agent-readable guide; SSE GET is 405");
+}
+
+// 14. Device flow: an agent with only HTTP gets a link for the user to approve.
+{
+  const form = (o) => ({
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(o),
+  });
+  const asMeta2 = await (await fetch(`${site}/.well-known/oauth-authorization-server`)).json();
+  assert.equal(asMeta2.device_authorization_endpoint, `${site}/mcp/oauth/device`);
+  assert.ok(asMeta2.grant_types_supported.includes("urn:ietf:params:oauth:grant-type:device_code"));
+
+  const start = await fetch(
+    asMeta2.device_authorization_endpoint,
+    form({ client_id: "mcp-agent", client_name: "Chat <script>Agent", scope: "todos:read" }),
+  );
+  assert.equal(start.status, 200);
+  const dev = await start.json();
+  assert.match(dev.user_code, /^[A-Z]{4}-[A-Z]{4}$/);
+  const link = new URL(dev.verification_uri_complete);
+  assert.equal(link.pathname, "/connect");
+
+  const poll = () =>
+    fetch(
+      `${site}/mcp/oauth/token`,
+      form({
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        client_id: "mcp-agent",
+        device_code: dev.device_code,
+      }),
+    ).then(async (r) => ({ status: r.status, body: await r.json() }));
+  assert.equal((await poll()).body.error, "authorization_pending");
+  assert.equal((await poll()).body.error, "slow_down");
+
+  // The user opens the link (or types the code) and approves.
+  const requestId = link.searchParams.get("request");
+  assert.equal(
+    await convex.mutation(api.mcp.findAuthRequest, { userCode: dev.user_code.toLowerCase().replace("-", " ") }),
+    requestId,
+  );
+  const details = await convex.query(api.mcp.getAuthRequest, { requestId });
+  assert.equal(details.kind, "device");
+  assert.equal(details.userCode, dev.user_code);
+  assert.equal(details.clientName, "Chat scriptAgent");
+  const { redirectUrl } = await convex.action(api.mcp.authorize, { requestId, approve: true });
+  assert.equal(redirectUrl, null);
+
+  const got = await poll();
+  assert.equal(got.status, 200, JSON.stringify(got.body));
+  assert.equal(got.body.refresh_token, undefined);
+  assert.equal(got.body.scope, "todos:read");
+  const listed = await rpc(got.body.access_token, "tools/call", {
+    name: "list_todos",
+    arguments: { listId },
+  });
+  assert.equal(listed.body.result.structuredContent.todos.length, 1);
+  const write = await rpc(got.body.access_token, "tools/call", {
+    name: "add_todo",
+    arguments: { listId, text: "x" },
+  });
+  assert.equal(write.status, 403);
+  assert.equal((await poll()).body.error, "invalid_grant"); // single use
+  ok("device flow: link + code → user approves → scoped access token, no refresh token");
+
+  // Denied and unknown-client cases.
+  const second = await (
+    await fetch(asMeta2.device_authorization_endpoint, form({ client_id: "mcp-agent" }))
+  ).json();
+  const rid = new URL(second.verification_uri_complete).searchParams.get("request");
+  await convex.action(api.mcp.authorize, { requestId: rid, approve: false });
+  const denied = await fetch(
+    `${site}/mcp/oauth/token`,
+    form({
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      client_id: "mcp-agent",
+      device_code: second.device_code,
+    }),
+  ).then((r) => r.json());
+  assert.equal(denied.error, "access_denied");
+  const unknown = await fetch(asMeta2.device_authorization_endpoint, form({ client_id: "nope" }));
+  assert.equal(unknown.status, 401);
+  ok("device flow: denial → access_denied; unknown client → 401");
+}
+
 console.log("\nAll end-to-end checks passed.");

@@ -57,3 +57,7 @@ button.primary {
 h1 {
   font-size: 2rem;
 }
+.usercode {
+  font-size: 1.3em;
+  letter-spacing: 0.1em;
+}

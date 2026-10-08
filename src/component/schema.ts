@@ -1,6 +1,16 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+const authRequestCommon = {
+  requestId: v.string(),
+  clientId: v.string(),
+  scopes: v.array(v.string()),
+  resource: v.string(),
+  expiresAt: v.number(),
+  status: v.union(v.literal("pending"), v.literal("approved"), v.literal("denied")),
+  userId: v.optional(v.string()),
+};
+
 export default defineSchema({
   // OAuth clients created through dynamic client registration (RFC 7591).
   clients: defineTable({
@@ -15,28 +25,38 @@ export default defineSchema({
     .index("clientId", ["clientId"])
     .index("expiresAt", ["expiresAt"]),
 
-  // A pending /authorize request, waiting for the signed-in user to approve
-  // it on the app's consent page. Once approved it holds the (hashed)
-  // authorization code until it is exchanged.
-  authRequests: defineTable({
-    requestId: v.string(),
-    clientId: v.string(),
-    redirectUri: v.string(),
-    codeChallenge: v.string(),
-    state: v.optional(v.string()),
-    scopes: v.array(v.string()),
-    resource: v.string(),
-    expiresAt: v.number(),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("approved"),
-      v.literal("denied"),
+  // A pending authorization, waiting for the signed-in user to approve it on
+  // the app's consent page. One of two kinds:
+  // - redirect (OAuth authorization code): once approved it holds the hashed
+  //   authorization code until it is exchanged.
+  // - device (RFC 8628, for agents that can only make HTTP calls): the agent
+  //   polls with the hashed device code until the user approves.
+  authRequests: defineTable(
+    v.union(
+      v.object({
+        ...authRequestCommon,
+        kind: v.optional(v.literal("redirect")),
+        redirectUri: v.string(),
+        codeChallenge: v.string(),
+        state: v.optional(v.string()),
+        codeHash: v.optional(v.string()),
+      }),
+      v.object({
+        ...authRequestCommon,
+        kind: v.literal("device"),
+        // Self-reported by the agent; shown as unverified.
+        clientName: v.optional(v.string()),
+        deviceCodeHash: v.string(),
+        userCode: v.string(),
+        pollIntervalMs: v.number(),
+        lastPolledAt: v.optional(v.number()),
+      }),
     ),
-    userId: v.optional(v.string()),
-    codeHash: v.optional(v.string()),
-  })
+  )
     .index("requestId", ["requestId"])
     .index("codeHash", ["codeHash"])
+    .index("deviceCodeHash", ["deviceCodeHash"])
+    .index("userCode", ["userCode"])
     .index("expiresAt", ["expiresAt"]),
 
   // One connection between a user and an agent: an OAuth client the user

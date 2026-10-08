@@ -330,3 +330,22 @@ describe("lint", () => {
     expect(checkValue(validator, { userId: "u" }).ok).toBe(false);
   });
 });
+
+describe("GET /mcp guide", () => {
+  test("explains device sign-in; hides tools unless describeTools", async () => {
+    const s = server({ secret_tool: tool({ description: "Internal thing", handler: async () => null }) });
+    const text = s.guide();
+    expect(text).toContain("client_id=mcp-agent");
+    expect(text).toContain("https://site.example/mcp/oauth/device");
+    expect(text).not.toContain("secret_tool");
+    const open = new McpServer(components.mcp, {
+      name: "t",
+      version: "1",
+      consentUrl: "https://app.example/connect",
+      siteUrl: "https://site.example",
+      describeTools: true,
+      tools: { secret_tool: tool({ description: "Internal thing", handler: async () => null }) },
+    });
+    expect(open.guide()).toContain("secret_tool");
+  });
+});

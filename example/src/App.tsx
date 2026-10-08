@@ -57,12 +57,60 @@ function Consent() {
 }
 
 function ConsentPrompt() {
-  const requestId = new URLSearchParams(window.location.search).get("request") ?? "";
+  const [requestId, setRequestId] = useState(
+    () => new URLSearchParams(window.location.search).get("request") ?? "",
+  );
+  if (!requestId) return <EnterCode onFound={setRequestId} />;
+  return <Approve requestId={requestId} />;
+}
+
+/** For agents that showed the user a code instead of a link. */
+function EnterCode({ onFound }: { onFound: (requestId: string) => void }) {
+  const find = useMutation(api.mcp.findAuthRequest);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <section className="card">
+      <h1>Connect an agent</h1>
+      <p>Enter the code your agent is showing you.</p>
+      <form
+        className="row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError(null);
+          find({ userCode: code })
+            .then((id) => (id ? onFound(id) : setError("That code isn't valid or has expired.")))
+            .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+        }}
+      >
+        <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="ABCD-EFGH" />
+        <button type="submit">Continue</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+function Approve({ requestId }: { requestId: string }) {
   const request = useQuery(api.mcp.getAuthRequest, { requestId });
   const authorize = useAction(api.mcp.authorize);
   const [busy, setBusy] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [done, setDone] = useState<"approved" | "denied" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  if (done) {
+    return (
+      <section className="card">
+        <h1>{done === "approved" ? "Connected" : "Denied"}</h1>
+        <p>
+          {done === "approved"
+            ? "You can go back to your agent now. You can disconnect it any time from Todos."
+            : "Your agent was not given access."}
+        </p>
+      </section>
+    );
+  }
   if (request === undefined) return <p>Loading…</p>;
   if (request === null || request.status !== "pending") {
     return (
@@ -72,38 +120,58 @@ function ConsentPrompt() {
       </section>
     );
   }
+  const isDevice = request.kind === "device";
   const decide = async (approve: boolean) => {
     setBusy(true);
     try {
       const { redirectUrl } = await authorize({ requestId, approve });
-      window.location.assign(redirectUrl);
+      if (redirectUrl) window.location.assign(redirectUrl);
+      else setDone(approve ? "approved" : "denied");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
+  // Client names are self-reported, so they're labeled as unverified.
   const name = request.clientName ?? "An MCP client";
   return (
     <section className="card">
-      <h1>Connect {name}?</h1>
+      <h1>Connect an agent?</h1>
       <p>
-        <strong>{name}</strong> wants to use {request.serverName} on your behalf.
-        It will be able to:
+        <strong>{name}</strong> <span className="muted">(name not verified)</span> wants to use{" "}
+        {request.serverName} on your behalf. It will be able to:
       </p>
       <ul className="scopes">
         {request.scopes.map((s) => (
           <li key={s.name}>{s.description}</li>
         ))}
       </ul>
-      <p className="muted">
-        You'll be sent back to <code>{new URL(request.redirectUri).host || request.redirectUri}</code>.
-      </p>
+      {isDevice ? (
+        <>
+          <p>
+            Your agent should be showing this code: <code className="usercode">{request.userCode}</code>
+          </p>
+          <label className="row">
+            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+            I started this from my own agent, and it shows the same code.
+          </label>
+          <p className="muted">If someone sent you this link, deny it.</p>
+        </>
+      ) : (
+        <p className="muted">
+          You'll be sent back to <code>{request.redirectUri && new URL(request.redirectUri).host}</code>.
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       <div className="row">
         <button disabled={busy} onClick={() => void decide(false)}>
           Deny
         </button>
-        <button className="primary" disabled={busy} onClick={() => void decide(true)}>
+        <button
+          className="primary"
+          disabled={busy || (isDevice && !confirmed)}
+          onClick={() => void decide(true)}
+        >
           Allow
         </button>
       </div>

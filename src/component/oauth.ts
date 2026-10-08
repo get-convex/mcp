@@ -1,6 +1,8 @@
-// OAuth 2.1 authorization-code flow state. Plaintext secrets never reach
-// these functions: the caller generates them and passes SHA-256 hashes.
+// OAuth 2.1 authorization-code and device (RFC 8628) flow state. Plaintext
+// secrets never reach these functions: the caller generates them and passes
+// SHA-256 hashes.
 import { v } from "convex/values";
+import type { MutationCtx } from "./_generated/server.js";
 import { mutation, query } from "./_generated/server.js";
 import { rateLimiter } from "./limits.js";
 import { deleteGrant, issueTokens } from "./tokens.js";
@@ -48,17 +50,93 @@ export const createAuthRequest = mutation({
   },
 });
 
+/**
+ * Starts a device authorization (RFC 8628). The agent shows the user a link
+ * to the consent page and polls `pollDevice` with the device code.
+ */
+export const createDeviceRequest = mutation({
+  args: {
+    requestId: v.string(),
+    clientId: v.string(),
+    clientName: v.optional(v.string()),
+    deviceCodeHash: v.string(),
+    userCode: v.string(),
+    scopes: v.array(v.string()),
+    resource: v.string(),
+    ttlMs: v.number(),
+    intervalMs: v.number(),
+  },
+  returns: v.union(
+    v.object({ ok: v.literal(true) }),
+    v.object({ ok: v.literal(false), retryAfterMs: v.number() }),
+  ),
+  handler: async (ctx, { ttlMs, intervalMs, ...args }) => {
+    for (const limit of [
+      await rateLimiter.limit(ctx, "deviceRequest"),
+      await rateLimiter.limit(ctx, "authRequestGlobal"),
+    ]) {
+      if (!limit.ok) {
+        return { ok: false as const, retryAfterMs: limit.retryAfter };
+      }
+    }
+    const taken = await ctx.db
+      .query("authRequests")
+      .withIndex("userCode", (q) => q.eq("userCode", args.userCode))
+      .first();
+    if (taken) throw new Error("user code collision; retry");
+    await ctx.db.insert("authRequests", {
+      ...args,
+      kind: "device",
+      status: "pending",
+      pollIntervalMs: intervalMs,
+      expiresAt: Date.now() + ttlMs,
+    });
+    return { ok: true as const };
+  },
+});
+
+/**
+ * Resolves a user code typed on the consent page to its request. A mutation
+ * so attempts can be rate limited per signed-in user (RFC 8628 §5.1).
+ */
+export const findByUserCode = mutation({
+  args: { userCode: v.string(), limitKey: v.string() },
+  returns: v.union(
+    v.object({ ok: v.literal(true), requestId: v.union(v.null(), v.string()) }),
+    v.object({ ok: v.literal(false), retryAfterMs: v.number() }),
+  ),
+  handler: async (ctx, args) => {
+    const limit = await rateLimiter.limit(ctx, "userCodeLookup", { key: args.limitKey });
+    if (!limit.ok) return { ok: false as const, retryAfterMs: limit.retryAfter };
+    const request = await ctx.db
+      .query("authRequests")
+      .withIndex("userCode", (q) => q.eq("userCode", args.userCode))
+      .first();
+    if (
+      !request ||
+      request.kind !== "device" ||
+      request.status !== "pending" ||
+      request.expiresAt <= Date.now()
+    ) {
+      return { ok: true as const, requestId: null };
+    }
+    return { ok: true as const, requestId: request.requestId };
+  },
+});
+
 /** What the consent page shows the signed-in user. */
 export const getAuthRequest = query({
   args: { requestId: v.string() },
   returns: v.union(
     v.null(),
     v.object({
+      kind: v.union(v.literal("redirect"), v.literal("device")),
       clientId: v.string(),
       clientName: v.optional(v.string()),
       clientUri: v.optional(v.string()),
       logoUri: v.optional(v.string()),
-      redirectUri: v.string(),
+      redirectUri: v.optional(v.string()),
+      userCode: v.optional(v.string()),
       scopes: v.array(v.string()),
       status: v.union(
         v.literal("pending"),
@@ -77,22 +155,36 @@ export const getAuthRequest = query({
       .query("clients")
       .withIndex("clientId", (q) => q.eq("clientId", request.clientId))
       .unique();
-    if (!client) return null;
-    return {
-      clientId: client.clientId,
-      clientName: client.clientName,
-      clientUri: client.clientUri,
-      logoUri: client.logoUri,
-      redirectUri: request.redirectUri,
+    if (!client && request.kind !== "device") return null;
+    const common = {
+      clientId: request.clientId,
       scopes: request.scopes,
       status: request.status,
+    };
+    if (request.kind === "device") {
+      return {
+        ...common,
+        kind: "device" as const,
+        clientName: client?.clientName ?? request.clientName,
+        userCode: request.userCode,
+      };
+    }
+    return {
+      ...common,
+      kind: "redirect" as const,
+      clientName: client?.clientName,
+      clientUri: client?.clientUri,
+      logoUri: client?.logoUri,
+      redirectUri: request.redirectUri,
     };
   },
 });
 
 /**
- * Settles a pending request. On approval the authorization code (by hash) is
- * bound to the user; the caller redirects to `redirectUri` with the code.
+ * Settles a pending request. For the code flow, approval binds the
+ * authorization code (by hash) to the user and the caller redirects to
+ * `redirectUri`. For the device flow, approval lets the agent's next poll
+ * receive tokens.
  */
 export const decideAuthRequest = mutation({
   args: {
@@ -104,7 +196,12 @@ export const decideAuthRequest = mutation({
   },
   returns: v.union(
     v.null(),
-    v.object({ redirectUri: v.string(), state: v.optional(v.string()) }),
+    v.object({
+      kind: v.literal("redirect"),
+      redirectUri: v.string(),
+      state: v.optional(v.string()),
+    }),
+    v.object({ kind: v.literal("device") }),
   ),
   handler: async (ctx, args) => {
     const request = await ctx.db
@@ -117,6 +214,13 @@ export const decideAuthRequest = mutation({
       request.expiresAt <= Date.now()
     ) {
       return null;
+    }
+    if (request.kind === "device") {
+      await ctx.db.patch("authRequests", request._id, {
+        status: args.approved ? "approved" : "denied",
+        userId: args.userId,
+      });
+      return { kind: "device" as const };
     }
     if (args.approved) {
       if (!args.codeHash) throw new Error("codeHash required to approve");
@@ -132,9 +236,104 @@ export const decideAuthRequest = mutation({
         userId: args.userId,
       });
     }
-    return { redirectUri: request.redirectUri, state: request.state };
+    return {
+      kind: "redirect" as const,
+      redirectUri: request.redirectUri,
+      state: request.state,
+    };
   },
 });
+
+/**
+ * device_code grant (RFC 8628 §3.4/3.5): pending → authorization_pending
+ * (or slow_down when polling faster than `intervalMs`), denied →
+ * access_denied, expired → expired_token, approved → tokens, single use.
+ */
+export const pollDevice = mutation({
+  args: {
+    deviceCodeHash: v.string(),
+    clientId: v.string(),
+    accessHash: v.string(),
+    accessTtlMs: v.number(),
+  },
+  returns: tokenResult,
+  handler: async (ctx, args) => {
+    const request = await ctx.db
+      .query("authRequests")
+      .withIndex("deviceCodeHash", (q) => q.eq("deviceCodeHash", args.deviceCodeHash))
+      .unique();
+    if (!request || request.kind !== "device" || request.clientId !== args.clientId) {
+      return { ok: false as const, error: "invalid_grant" };
+    }
+    const now = Date.now();
+    if (request.expiresAt <= now) {
+      await ctx.db.delete("authRequests", request._id);
+      return { ok: false as const, error: "expired_token" };
+    }
+    if (request.status === "denied") {
+      await ctx.db.delete("authRequests", request._id);
+      return { ok: false as const, error: "access_denied" };
+    }
+    if (request.status === "pending" || !request.userId) {
+      // Every premature poll answers slow_down and adds 5s to this
+      // request's minimum interval (RFC 8628 §3.5).
+      const tooFast =
+        request.lastPolledAt !== undefined &&
+        now - request.lastPolledAt < request.pollIntervalMs;
+      await ctx.db.patch("authRequests", request._id, {
+        lastPolledAt: now,
+        ...(tooFast ? { pollIntervalMs: request.pollIntervalMs + 5000 } : {}),
+      });
+      return {
+        ok: false as const,
+        error: tooFast ? "slow_down" : "authorization_pending",
+      };
+    }
+    await ctx.db.delete("authRequests", request._id);
+    const client = await ctx.db
+      .query("clients")
+      .withIndex("clientId", (q) => q.eq("clientId", request.clientId))
+      .unique();
+    // Device-flow tokens may end up in chat transcripts: access token only,
+    // no refresh token. The agent runs the flow again when it expires.
+    await createGrant(ctx, {
+      userId: request.userId,
+      clientId: request.clientId,
+      name: client?.clientName ?? request.clientName ?? "Agent",
+      scopes: request.scopes,
+      resource: request.resource,
+      tokens: { accessHash: args.accessHash, accessTtlMs: args.accessTtlMs },
+    });
+    return { ok: true as const, scopes: request.scopes };
+  },
+});
+
+async function createGrant(
+  ctx: MutationCtx,
+  args: {
+    userId: string;
+    clientId: string;
+    name: string;
+    scopes: string[];
+    resource: string;
+    tokens: {
+      accessHash: string;
+      accessTtlMs: number;
+      refreshHash?: string;
+      refreshTtlMs?: number;
+    };
+  },
+) {
+  const grantId = await ctx.db.insert("grants", {
+    userId: args.userId,
+    kind: "oauth",
+    clientId: args.clientId,
+    name: args.name,
+    scopes: args.scopes,
+    resource: args.resource,
+  });
+  await issueTokens(ctx, grantId, args.tokens);
+}
 
 /** authorization_code grant. PKCE and redirect_uri are checked here. */
 export const exchangeCode = mutation({
@@ -159,6 +358,7 @@ export const exchangeCode = mutation({
     // Single use: whatever happens next, this code is spent.
     await ctx.db.delete("authRequests", request._id);
     if (
+      request.kind === "device" ||
       request.status !== "approved" ||
       !request.userId ||
       request.expiresAt <= Date.now() ||
@@ -181,15 +381,14 @@ export const exchangeCode = mutation({
     }
     // Every authorization is its own connection: the same client (e.g. one
     // CIMD client ID used on several machines) can be connected many times.
-    const grantId = await ctx.db.insert("grants", {
+    await createGrant(ctx, {
       userId,
-      kind: "oauth",
       clientId: request.clientId,
       name: client.clientName ?? "MCP client",
       scopes: request.scopes,
       resource: request.resource,
+      tokens: args,
     });
-    await issueTokens(ctx, grantId, args);
     return { ok: true as const, scopes: request.scopes };
   },
 });

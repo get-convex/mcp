@@ -120,6 +120,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { ok: true } | { ok: false; retryAfterMs: number },
         Name
       >;
+      createDeviceRequest: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          clientId: string;
+          clientName?: string;
+          deviceCodeHash: string;
+          intervalMs: number;
+          requestId: string;
+          resource: string;
+          scopes: Array<string>;
+          ttlMs: number;
+          userCode: string;
+        },
+        { ok: true } | { ok: false; retryAfterMs: number },
+        Name
+      >;
       decideAuthRequest: FunctionReference<
         "mutation",
         "internal",
@@ -130,7 +147,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           requestId: string;
           userId: string;
         },
-        null | { redirectUri: string; state?: string },
+        | null
+        | { kind: "redirect"; redirectUri: string; state?: string }
+        | { kind: "device" },
         Name
       >;
       exchangeCode: FunctionReference<
@@ -150,6 +169,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { ok: true; scopes: Array<string> } | { error: string; ok: false },
         Name
       >;
+      findByUserCode: FunctionReference<
+        "mutation",
+        "internal",
+        { limitKey: string; userCode: string },
+        | { ok: true; requestId: null | string }
+        | { ok: false; retryAfterMs: number },
+        Name
+      >;
       getAuthRequest: FunctionReference<
         "query",
         "internal",
@@ -158,11 +185,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           clientId: string;
           clientName?: string;
           clientUri?: string;
+          kind: "redirect" | "device";
           logoUri?: string;
-          redirectUri: string;
+          redirectUri?: string;
           scopes: Array<string>;
           status: "pending" | "approved" | "denied";
+          userCode?: string;
         },
+        Name
+      >;
+      pollDevice: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          accessHash: string;
+          accessTtlMs: number;
+          clientId: string;
+          deviceCodeHash: string;
+        },
+        { ok: true; scopes: Array<string> } | { error: string; ok: false },
         Name
       >;
       refresh: FunctionReference<

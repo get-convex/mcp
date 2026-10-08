@@ -130,6 +130,17 @@ Two credential kinds, one `tokens` table (stores SHA-256 hash only):
 2. **API keys** (Claude Code / Cursor / scripts): `createApiKey` action
    returns the plaintext once; long-lived until revoked.
 
+3. **Device flow** (RFC 8628), for agents that only have an HTTP tool:
+   `GET /mcp` returns agent-readable instructions; `POST /mcp/oauth/device`
+   with the published public client `mcp-agent` (or a registered client)
+   returns `verification_uri_complete` (the consent page) + a `user_code`;
+   the agent polls the token endpoint (`authorization_pending`,
+   `slow_down` adding 5 s to the stored interval each time,
+   `access_denied`, `expired_token`) and gets an **access token only**.
+   The consent page requires the user to confirm the code. User-code
+   lookups are rate limited per user; device requests have their own
+   bucket. `authRequests` is a union table of redirect and device kinds.
+
 A **grant** row = one connection (user × client). `listConnections` /
 `revoke` let the app render a "Connected agents" settings page; revoking a
 grant kills all its tokens.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.0-alpha.4
+
+- Paste the URL into any agent chat: `GET /mcp` returns agent-readable
+  instructions, and agents with only an HTTP tool sign in with the OAuth
+  device flow (RFC 8628, public client `mcp-agent`) — a clickable approval
+  link plus a code to confirm, then a short-lived access token (no refresh
+  token).
+- Consent API: `getAuthRequest` returns `kind` and `userCode`;
+  `authorize` returns `redirectUrl: null` for device requests; new
+  `findAuthRequest({ userCode })` for typed codes (rate limited).
+- Options: `deviceFlow` (default true), `describeTools` (default false).
+
 ## 0.1.0-alpha.3
 
 - Typed user IDs: `createTool<Id<"users">>()` and `McpServer<UserId>`, so

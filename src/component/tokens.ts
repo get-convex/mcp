@@ -70,9 +70,10 @@ export async function issueTokens(
   grantId: Id<"grants">,
   args: {
     accessHash: string;
-    refreshHash: string;
     accessTtlMs: number;
-    refreshTtlMs: number;
+    // Omitted for grants that must not be refreshable (device flow).
+    refreshHash?: string;
+    refreshTtlMs?: number;
   },
 ) {
   const now = Date.now();
@@ -82,12 +83,14 @@ export async function issueTokens(
     kind: "access",
     expiresAt: now + args.accessTtlMs,
   });
-  await ctx.db.insert("tokens", {
-    hash: args.refreshHash,
-    grantId,
-    kind: "refresh",
-    expiresAt: now + args.refreshTtlMs,
-  });
+  if (args.refreshHash && args.refreshTtlMs) {
+    await ctx.db.insert("tokens", {
+      hash: args.refreshHash,
+      grantId,
+      kind: "refresh",
+      expiresAt: now + args.refreshTtlMs,
+    });
+  }
 }
 
 /**
