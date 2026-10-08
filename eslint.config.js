@@ -15,6 +15,7 @@ export default [
       "**/_generated/",
       "initTemplate.mjs",
       "example/e2e.mjs",
+      "explorations/**",
     ],
   },
   {

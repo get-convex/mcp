@@ -19,10 +19,11 @@ export const mcp = new McpServer(components.mcp, {
   },
   tools: {
     list_todos: tool({
-      description: "List the user's todos, optionally filtered by completion.",
-      args: { done: v.optional(v.boolean()) },
+      description:
+        "List the user's todos, newest first, optionally filtered by completion. Returns at most `limit` (default 50, max 100).",
+      args: { done: v.optional(v.boolean()), limit: v.optional(v.number()) },
       returns: v.object({ todos: v.array(todo) }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: false },
       scope: "todos:read",
       handler: async (ctx, args, user) => ({
         todos: await ctx.runQuery(internal.todos.listForUser, {
@@ -32,9 +33,10 @@ export const mcp = new McpServer(components.mcp, {
       }),
     }),
     add_todo: tool({
-      description: "Add a todo for the user.",
+      description: "Add a todo for the user. Text is at most 1000 characters.",
       args: { text: v.string() },
       returns: todo,
+      annotations: { destructiveHint: false, openWorldHint: false },
       scope: "todos:write",
       handler: (ctx, args, user) =>
         ctx.runMutation(internal.todos.addForUser, {
@@ -46,7 +48,7 @@ export const mcp = new McpServer(components.mcp, {
       description: "Mark a todo as done or not done.",
       args: { id: v.string(), done: v.boolean() },
       returns: todo,
-      annotations: { idempotentHint: true },
+      annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false },
       scope: "todos:write",
       handler: (ctx, args, user) =>
         ctx.runMutation(internal.todos.setDoneForUser, {
@@ -57,7 +59,7 @@ export const mcp = new McpServer(components.mcp, {
     delete_todo: tool({
       description: "Delete a todo permanently.",
       args: { id: v.string() },
-      annotations: { destructiveHint: true },
+      annotations: { destructiveHint: true, openWorldHint: false },
       scope: "todos:write",
       handler: async (ctx, args, user) => {
         await ctx.runMutation(internal.todos.removeForUser, {

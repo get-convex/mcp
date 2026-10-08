@@ -8,5 +8,9 @@ export default defineSchema({
     userId: v.id("users"),
     text: v.string(),
     done: v.boolean(),
-  }).index("userId", ["userId"]),
+  })
+    // Newest-first listing across all todos.
+    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
+    .index("userId", ["userId"])
+    .index("userId_done", ["userId", "done"]),
 });

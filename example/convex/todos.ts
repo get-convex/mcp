@@ -9,6 +9,17 @@ import {
 } from "./_generated/server.js";
 import type { MutationCtx, QueryCtx } from "./_generated/server.js";
 
+const MAX_TEXT_LENGTH = 1000;
+
+function checkText(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) throw new ConvexError("Todo text can't be empty");
+  if (trimmed.length > MAX_TEXT_LENGTH) {
+    throw new ConvexError(`Todo text must be at most ${MAX_TEXT_LENGTH} characters`);
+  }
+  return trimmed;
+}
+
 // The app's own functions, used by the React UI.
 
 export const list = query({
@@ -25,7 +36,7 @@ export const add = mutation({
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new ConvexError("Not signed in");
-    return await ctx.db.insert("todos", { userId, text: args.text, done: false });
+    return await ctx.db.insert("todos", { userId, text: checkText(args.text), done: false });
   },
 });
 
@@ -43,24 +54,36 @@ export const toggle = mutation({
 // `userId` explicitly, since tool calls don't carry a Convex auth identity.
 
 export const listForUser = internalQuery({
-  args: { userId: v.id("users"), done: v.optional(v.boolean()) },
+  args: {
+    userId: v.id("users"),
+    done: v.optional(v.boolean()),
+    limit: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
-    const todos = await listTodos(ctx, args.userId);
-    return todos
-      .filter((t) => args.done === undefined || t.done === args.done)
-      .map((t) => ({ id: t._id, text: t.text, done: t.done }));
+    const limit = Math.min(Math.max(Math.floor(args.limit ?? 50), 1), 100);
+    const done = args.done;
+    const todos =
+      done === undefined
+        ? await ctx.db
+            .query("todos")
+            .withIndex("userId", (q) => q.eq("userId", args.userId))
+            .order("desc")
+            .take(limit)
+        : await ctx.db
+            .query("todos")
+            .withIndex("userId_done", (q) => q.eq("userId", args.userId).eq("done", done))
+            .order("desc")
+            .take(limit);
+    return todos.map((t) => ({ id: t._id, text: t.text, done: t.done }));
   },
 });
 
 export const addForUser = internalMutation({
   args: { userId: v.id("users"), text: v.string() },
   handler: async (ctx, args) => {
-    const id = await ctx.db.insert("todos", {
-      userId: args.userId,
-      text: args.text,
-      done: false,
-    });
-    return { id, text: args.text, done: false };
+    const text = checkText(args.text);
+    const id = await ctx.db.insert("todos", { userId: args.userId, text, done: false });
+    return { id, text, done: false };
   },
 });
 
