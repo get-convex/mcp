@@ -1,7 +1,10 @@
 name: Release
 
-# Publishes to npm when a version tag (v*) is pushed, using npm **trusted
-# publishing** (OIDC) — no stored token. Provenance is attested automatically.
+# Stages a release on npm when a version tag (v*) is pushed, using npm
+# **trusted publishing** (OIDC) — no stored token. The package requires
+# proof-of-presence, so CI runs `npm stage publish` and a maintainer makes it
+# live with 2FA: `npm stage list @convex-dev/mcp`, then
+# `npm stage approve <stage-id>` (or approve on npmjs.com).
 # The dist-tag is derived from the version: a prerelease like 0.1.0-alpha.0
 # publishes under `alpha`, a plain 0.1.0 under `latest`.
 #
@@ -39,7 +42,7 @@ jobs:
       - run: npm test
       - run: npm run typecheck
       - run: npm run lint
-      - name: Publish (trusted publishing, no token)
+      - name: Stage for publishing (trusted publishing, no token)
         run: |
           VERSION=$(node -p "require('./package.json').version")
           if [[ "$VERSION" == *-* ]]; then
@@ -47,5 +50,5 @@ jobs:
           else
             TAG="latest"
           fi
-          echo "Publishing @convex-dev/mcp@$VERSION under dist-tag: $TAG"
-          npm publish --tag "$TAG" --access public
+          echo "Staging @convex-dev/mcp@$VERSION under dist-tag: $TAG"
+          npm stage publish --tag "$TAG" --access public
