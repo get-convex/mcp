@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.6
+
+- Agent guide (`GET /mcp`): request all needed scopes in one approval (omit
+  `scope` for all), use the device link right away even when the server is
+  also configured but not signed in in the MCP client, and how to recover
+  from 403 `insufficient_scope`.
+
 ## 0.1.0-alpha.5
 
 - Device approvals require the confirmed code:

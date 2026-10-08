@@ -1159,7 +1159,7 @@ export class McpServer<UserId extends string = string> {
         "",
         "## Agents with only an HTTP tool: use it directly",
         "",
-        "You can call this server with plain HTTP requests. The user must approve you first.",
+        "You can call this server with plain HTTP requests. The user must approve you first. This works right away, even if the server is also configured in your MCP client but not signed in yet: give the user the approval link below first. Signing in through the MCP client (for its native tool UI) is a separate, optional step.",
         "",
         "### 1. Request access",
         "",
@@ -1167,6 +1167,8 @@ export class McpServer<UserId extends string = string> {
           (scopes.length ? ` -d "scope=${scopes.map(([s]) => s).join(" ")}"` : ""),
         "",
         "`client_name` is shown to the user on the approval screen: use your product's name (e.g. Claude).",
+        "",
+        "Request every scope the user's task needs in this one request, so they approve once. If unsure, leave out `scope` to request all of them; the user sees exactly what they're granting. Asking for read-only first and then upgrading means a second approval.",
         "",
         "The JSON response has `verification_uri_complete`, `user_code`, `device_code`, `interval` and `expires_in`.",
         "",
@@ -1203,7 +1205,7 @@ export class McpServer<UserId extends string = string> {
         `      -H "MCP-Protocol-Version: 2026-07-28" -H "Mcp-Method: tools/call" -H "Mcp-Name: <tool>" \\`,
         `      -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"<tool>","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'`,
         "",
-        "Results are in `result.structuredContent` (and as text in `result.content`). `result.isError: true` means the call failed with a message you can act on. HTTP 401 means the token expired: request access again.",
+        "Results are in `result.structuredContent` (and as text in `result.content`). `result.isError: true` means the call failed with a message you can act on. HTTP 401 means the token expired: request access again. HTTP 403 `insufficient_scope` means your token lacks the scope named in the `WWW-Authenticate` header: request access again including it.",
       );
     }
     if (scopes.length) {
