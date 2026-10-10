@@ -23,10 +23,10 @@ jobs:
       contents: read
       id-token: write # OIDC token for npm trusted publishing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22 # trusted publishing needs Node >= 22.14
+          node-version: 24 # trusted publishing needs Node >= 22.14
           registry-url: "https://registry.npmjs.org"
       # ...and npm >= 11.5.1
       - run: npm install -g npm@latest
